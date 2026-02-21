@@ -5,19 +5,24 @@ All endpoints for the pipeline + individual stage triggers.
 
 from __future__ import annotations
 import asyncio
+from asyncio import Event
 import os
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 
 from models.state import PipelineState
+from models.docgen_state import DocGenState, HumanReview
 from pipeline.graph import run_pipeline
+from pipeline.docgen_graph import run_docgen_pipeline
 
 
 app = FastAPI(
@@ -37,6 +42,7 @@ app.add_middleware(
 # ─── In-memory session store (demo-grade) ─────────────────────────────────────
 # In prod: replace with Redis or DB
 _sessions: dict[str, PipelineState] = {}
+_docgen_sessions: dict[str, DocGenState] = {}
 
 
 # ─── Models ───────────────────────────────────────────────────────────────────
@@ -100,20 +106,67 @@ async def ingest_path(req: RunRequest):
 
 @app.post("/run/{session_id}", summary="Run full pipeline")
 async def run_full_pipeline(session_id: str, target_module: Optional[str] = None):
-    """Kick off the full 6-stage pipeline for a session."""
+    """Kick off the full 6-stage pipeline for a session (non-blocking)."""
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, f"Session {session_id} not found")
 
-    final_state = await run_pipeline(
-        repo_path=session.repo_path,
-        target_module=target_module or session.target_module,
-    )
-    _sessions[session_id] = final_state
-    return _state_to_response(final_state)
+    async def _task():
+        try:
+            final_state = await run_pipeline(
+                repo_path=session.repo_path,
+                target_module=target_module or session.target_module,
+            )
+            _sessions[session_id] = final_state
+        except Exception as e:
+            session.error = str(e)
+            _sessions[session_id] = session
+
+    asyncio.create_task(_task())
+    return {"status": "started", "session_id": session_id}
+
+
+@app.get("/stream/{session_id}", summary="Stream pipeline progress (SSE)")
+async def stream_pipeline(session_id: str, request: Request):
+    """Server-Sent Events endpoint for live progress bar."""
+    async def event_generator():
+        last_stage = None
+        while True:
+            if await request.is_disconnected():
+                break
+
+            state = _sessions.get(session_id)
+            if not state:
+                yield {"event": "error", "data": f"Session {session_id} not found"}
+                break
+
+            if state.current_stage != last_stage or state.error:
+                yield {
+                    "data": {
+                        "stage": state.current_stage,
+                        "error": state.error,
+                        "done":  state.current_stage == "complete" or bool(state.error)
+                    }
+                }
+                last_stage = state.current_stage
+
+            if state.current_stage == "complete" or state.error:
+                break
+
+            await asyncio.sleep(0.5)
+
+    return EventSourceResponse(event_generator())
 
 
 # ─── Stage-specific endpoints (for incremental UI) ────────────────────────────
+
+@app.get("/dead-code/{session_id}", summary="Get dead code report")
+def get_dead_code(session_id: str):
+    state = _get_state(session_id)
+    if not state.dead_code_report:
+        raise HTTPException(404, "Dead code analysis not yet run.")
+    return state.dead_code_report.model_dump()
+
 
 @app.get("/graph/{session_id}", summary="Get workflow graph (Cytoscape format)")
 def get_graph(session_id: str):
@@ -202,12 +255,98 @@ def get_status(session_id: str):
         "stages_done": {
             "ingest":          bool(state.repo_path),
             "workflow_mined":  bool(state.workflow_graph),
+            "dead_code":       bool(state.dead_code_report),
             "tests_generated": bool(state.test_suite),
             "baseline_run":    bool(state.baseline_run),
             "patch_generated": bool(state.migration_patch),
             "validated":       bool(state.validation_result),
-            "report_ready":    bool(state.confidence_report),
+        "report_ready":    bool(state.confidence_report),
         },
+    }
+
+
+# ─── DocGen Endpoints (B.LOC Linkup) ──────────────────────────────────────────
+
+class DocGenRequest(BaseModel):
+    repo_path: str
+    target_module: Optional[str] = None
+
+
+@app.post("/docgen/run-direct", summary="Run DocGen pipeline (direct)")
+async def run_docgen_direct(req: DocGenRequest):
+    """Kicks off the 4-agent doc generation pipeline."""
+    import uuid
+    session_id = str(uuid.uuid4())[:8]
+
+    initial_state = DocGenState(
+        session_id=session_id,
+        repo_path=req.repo_path,
+        target_module=req.target_module,
+        current_stage="starting"
+    )
+    _docgen_sessions[session_id] = initial_state
+
+    # Run in background
+    async def _task():
+        try:
+            final_state = await asyncio.to_thread(run_docgen_pipeline, initial_state)
+            _docgen_sessions[session_id] = final_state
+        except Exception as e:
+            initial_state.error = str(e)
+            _docgen_sessions[session_id] = initial_state
+
+    asyncio.create_task(_task())
+
+    return {
+        "session_id": session_id,
+        "stage": "started",
+        "message": "DocGen pipeline initiated."
+    }
+
+
+@app.get("/docgen/draft/{session_id}", summary="Get full documentation draft")
+async def get_docgen_draft(session_id: str):
+    """Fetch the polished markdown and QA results."""
+    state = _docgen_sessions.get(session_id)
+    if not state:
+        raise HTTPException(404, f"DocGen session {session_id} not found")
+
+    if not state.proofread_output:
+        return {
+            "session_id": session_id,
+            "stage": state.current_stage,
+            "status": "pending",
+            "preview": "Still processing LLM agents..."
+        }
+
+    p = state.proofread_output
+    qa = state.qa_output
+    return {
+        "final_markdown":  p.final_markdown,
+        "qa_score":       qa.qa_score if qa else 0.0,
+        "issues_found":    qa.issues_found if qa else [],
+        "biz_logic_added": qa.biz_logic_added if qa else [],
+        "word_count":      p.word_count,
+        "preview":        p.final_markdown[:500]
+    }
+
+
+@app.post("/docgen/approve/{session_id}", summary="Approve or reject a draft")
+async def approve_docgen_draft(session_id: str, review: HumanReview):
+    """Final human-in-the-loop approval step."""
+    state = _docgen_sessions.get(session_id)
+    if not state:
+        raise HTTPException(404, f"DocGen session {session_id} not found")
+
+    from datetime import datetime
+    review.reviewed_at = datetime.now().isoformat()
+    state.human_review = review
+    state.current_stage = f"review_{review.status}"
+
+    return {
+        "session_id": session_id,
+        "status":     review.status,
+        "message":    f"Documentation {review.status} successfully."
     }
 
 
@@ -238,8 +377,14 @@ def _state_to_response(state: PipelineState) -> dict:
         "error":         state.error,
         "report":        state.confidence_report.model_dump() if state.confidence_report else None,
         "validation":    state.validation_result.model_dump() if state.validation_result else None,
+        "test_coverage": state.test_suite.coverage_pct if state.test_suite else 0.0,
         "patch_summary": {
             "total_changes": len(state.migration_patch.changes) if state.migration_patch else 0,
             "lint_passed":   state.migration_patch.lint_passed if state.migration_patch else None,
         } if state.migration_patch else None,
     }
+
+
+# ─── Static files (frontend dashboard) ──────────────────────────────────────
+# Must be mounted AFTER all API routes so /api routes take precedence
+app.mount("/", StaticFiles(directory=str(Path(__file__).parent.parent / "frontend"), html=True), name="frontend")

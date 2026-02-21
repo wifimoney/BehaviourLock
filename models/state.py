@@ -40,6 +40,9 @@ class TestSuite(BaseModel):
     tests: list[GeneratedTest]
     total: int
     target_module: str
+    coverage_pct: float = 0.0               # % of codebase functions covered
+    covered_functions: list[str] = Field(default_factory=list)
+    uncovered_functions: list[str] = Field(default_factory=list)
 
 
 # ─── Baseline run ─────────────────────────────────────────────────────────────
@@ -95,6 +98,25 @@ class ValidationResult(BaseModel):
     behavior_preservation_pct: float
 
 
+# ─── Dead code detection ─────────────────────────────────────────────────────
+
+class DeadCodeItem(BaseModel):
+    name: str                       # qualified function/block name
+    module: str
+    lineno: int
+    kind: Literal["unreachable", "zero_callers", "commented_block"]
+    detail: str                     # human-readable explanation
+    source_snippet: str = ""        # first few lines of the dead code
+
+
+class DeadCodeReport(BaseModel):
+    items: list[DeadCodeItem]
+    total: int
+    unreachable_count: int
+    zero_caller_count: int
+    commented_block_count: int
+
+
 # ─── Final report ─────────────────────────────────────────────────────────────
 
 class ConfidenceReport(BaseModel):
@@ -105,6 +127,7 @@ class ConfidenceReport(BaseModel):
     what_changed: str               # LLM plain-English summary
     why_it_changed: str
     rollback_command: str
+    test_coverage_pct: float = 0.0   # % of codebase covered by tests
     risk_score: float               # 0.0 (safe) → 1.0 (blocked)
     judge_summary: str              # one-liner for the demo card
 
@@ -118,6 +141,7 @@ class PipelineState(BaseModel):
 
     # Stage outputs
     workflow_graph: Optional[WorkflowGraph] = None
+    dead_code_report: Optional[DeadCodeReport] = None
     test_suite: Optional[TestSuite] = None
     baseline_run: Optional[BaselineRun] = None
     migration_patch: Optional[MigrationPatch] = None

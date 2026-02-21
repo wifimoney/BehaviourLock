@@ -9,4 +9,5 @@ pytest
 pytest-json-report
 flake8
 python-multipart
+sse-starlette
 python-dotenv

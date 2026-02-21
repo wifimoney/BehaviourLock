@@ -103,13 +103,23 @@ def testgen_node(state: PipelineState) -> PipelineState:
         if not generated:
             return state.model_copy(update={"error": "Test generation produced no tests", "current_stage": "testgen_failed"})
 
+        # Coverage gap analysis: compare tested functions vs all functions
+        all_fn_ids = {n.id for n in wf_graph.nodes if n.node_type != "class"}
+        covered = {t.function_name for t in generated}
+        uncovered = sorted(all_fn_ids - covered)
+        coverage_pct = (len(covered) / len(all_fn_ids) * 100) if all_fn_ids else 100.0
+
         suite = TestSuite(
             tests=generated,
             total=len(generated),
             target_module=state.target_module or "all",
+            coverage_pct=round(coverage_pct, 1),
+            covered_functions=sorted(covered),
+            uncovered_functions=uncovered,
         )
 
-        print(f"[testgen] ✓ Generated {len(generated)} characterization tests")
+        print(f"[testgen] ✓ Generated {len(generated)} characterization tests "
+              f"({coverage_pct:.0f}% coverage, {len(uncovered)} uncovered)")
 
         return state.model_copy(update={
             "test_suite": suite,

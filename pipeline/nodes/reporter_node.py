@@ -23,6 +23,7 @@ _USER = """Generate a confidence report for this migration.
 
 ## Validation Summary
 - Behavior preservation: {preservation_pct}%
+- Test coverage of codebase: {coverage_pct}%
 - Tests passing after migration: {passing}/{total}
 - Critical drifts (logic changed): {critical_count}
 - Non-critical drifts (cosmetic): {non_critical_count}
@@ -76,6 +77,7 @@ def reporter_node(state: PipelineState) -> PipelineState:
 
         prompt = _USER.format(
             preservation_pct=vr.behavior_preservation_pct,
+            coverage_pct=state.test_suite.coverage_pct if state.test_suite else 0.0,
             passing=passing,
             total=total,
             critical_count=vr.critical_drift_count,
@@ -108,6 +110,7 @@ def reporter_node(state: PipelineState) -> PipelineState:
             what_changed=data.get("what_changed", ""),
             why_it_changed=data.get("why_it_changed", ""),
             rollback_command=data.get("rollback_command", "git stash pop"),
+            test_coverage_pct=state.test_suite.coverage_pct if state.test_suite else 0.0,
             risk_score=float(data.get("risk_score", 0.5)),
             judge_summary=data.get("judge_summary", ""),
         )

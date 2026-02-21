@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from models.state import PipelineState
 from pipeline.nodes.ingest_node          import ingest_node
 from pipeline.nodes.workflow_miner_node  import workflow_miner_node
+from pipeline.nodes.dead_code_node       import dead_code_node
 from pipeline.nodes.testgen_node         import testgen_node
 from pipeline.nodes.baseline_runner_node import baseline_runner_node
 from pipeline.nodes.migrator_node        import migrator_node
@@ -36,6 +37,7 @@ def build_pipeline() -> CompiledStateGraph:
     # Register nodes (each wraps our PipelineState node function)
     builder.add_node("ingest",          _wrap(ingest_node))
     builder.add_node("workflow_miner",  _wrap(workflow_miner_node))
+    builder.add_node("dead_code",       _wrap(dead_code_node))
     builder.add_node("testgen",         _wrap(testgen_node))
     builder.add_node("baseline_runner", _wrap(baseline_runner_node))
     builder.add_node("migrator",        _wrap(migrator_node))
@@ -47,7 +49,8 @@ def build_pipeline() -> CompiledStateGraph:
 
     # Sequential edges with conditional abort on error
     _add_conditional(builder, "ingest",          "workflow_miner")
-    _add_conditional(builder, "workflow_miner",  "testgen")
+    _add_conditional(builder, "workflow_miner",  "dead_code")
+    _add_conditional(builder, "dead_code",       "testgen")
     _add_conditional(builder, "testgen",         "baseline_runner")
     _add_conditional(builder, "baseline_runner", "migrator")
     _add_conditional(builder, "migrator",        "validator")
