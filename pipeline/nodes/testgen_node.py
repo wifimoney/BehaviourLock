@@ -10,11 +10,14 @@ import json
 import os
 from pathlib import Path
 
-import anthropic
+import openai
 
 from models.state import PipelineState, GeneratedTest, TestSuite
 
-CLIENT = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+CLIENT = openai.OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+)
 
 TESTGEN_SYSTEM = """You are an expert Python test engineer specialising in characterization tests (golden snapshot tests).
 
@@ -130,7 +133,7 @@ def testgen_node(state: PipelineState) -> PipelineState:
         return state.model_copy(update={"error": str(e), "current_stage": "testgen_failed"})
 
 
-# ─── Claude API call ──────────────────────────────────────────────────────────
+# ─── Claude API call (now Gemini via OpenRouter) ──────────────────────────────
 
 def _call_claude_testgen(
     function_source: str,
@@ -145,14 +148,16 @@ def _call_claude_testgen(
         module_path=module_path,
     )
 
-    response = CLIENT.messages.create(
-        model="claude-sonnet-4-6",
+    response = CLIENT.chat.completions.create(
+        model="google/gemini-2.0-pro-exp-02-05:free",
         max_tokens=2048,
-        system=TESTGEN_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": TESTGEN_SYSTEM},
+            {"role": "user", "content": prompt}
+        ],
     )
 
-    raw = response.content[0].text.strip()
+    raw = response.choices[0].message.content.strip()
 
     # Strip markdown fences if present
     if raw.startswith("```"):

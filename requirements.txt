@@ -9,5 +9,7 @@ pytest
 pytest-json-report
 flake8
 python-multipart
+openai
+langchain-openai
 sse-starlette
 python-dotenv

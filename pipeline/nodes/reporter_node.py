@@ -8,11 +8,14 @@ from __future__ import annotations
 import json
 import os
 
-import anthropic
+import openai
 
 from models.state import PipelineState, ConfidenceReport
 
-CLIENT = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+CLIENT = openai.OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+)
 
 _SYSTEM = """You are BehaviorLock's report engine.
 Given migration validation results, produce a concise, actionable confidence report for a senior engineer.
@@ -86,14 +89,16 @@ def reporter_node(state: PipelineState) -> PipelineState:
             changes_summary=changes_summary,
         )
 
-        response = CLIENT.messages.create(
-            model="claude-sonnet-4-6",
+        response = CLIENT.chat.completions.create(
+            model="google/gemini-2.0-pro-exp-02-05:free",
             max_tokens=1024,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": prompt}
+            ],
         )
 
-        raw = response.content[0].text.strip()
+        raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

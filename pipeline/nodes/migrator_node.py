@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel as LCBaseModel, Field
@@ -29,9 +29,10 @@ class PatchOutput(LCBaseModel):
 
 # ─── LangChain chain ──────────────────────────────────────────────────────────
 
-_llm = ChatAnthropic(
-    model="claude-sonnet-4-6",
-    api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+_llm = ChatOpenAI(
+    model="google/gemini-2.0-pro-exp-02-05:free",
+    openai_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+    openai_api_base="https://openrouter.ai/api/v1",
     max_tokens=4096,
 )
 
