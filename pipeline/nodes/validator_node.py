@@ -84,8 +84,8 @@ def validator_node(state: PipelineState) -> PipelineState:
                 ))
 
         total = len(migrated_results)
-        passing = sum(1 for r in migrated_results if r.passed)
-        preservation_pct = (passing / total * 100) if total > 0 else 0.0
+        drifting = len(drifts)
+        preservation_pct = ((total - drifting) / total * 100) if total > 0 else 0.0
 
         critical_count     = sum(1 for d in drifts if d.severity == "critical")
         non_critical_count = sum(1 for d in drifts if d.severity == "non_critical")
@@ -98,8 +98,9 @@ def validator_node(state: PipelineState) -> PipelineState:
             behavior_preservation_pct=round(preservation_pct, 1),
         )
 
+        matching = total - drifting
         print(
-            f"[validator] ✓ {passing}/{total} tests pass | "
+            f"[validator] ✓ {matching}/{total} tests matching | "
             f"{critical_count} critical drifts | "
             f"{preservation_pct:.1f}% preserved"
         )

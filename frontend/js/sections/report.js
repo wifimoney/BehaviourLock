@@ -83,7 +83,75 @@ const ReportSection = (() => {
           <code class="text-xs bg-bg rounded px-2 py-1 text-accent-light block overflow-x-auto">${data.rollback_command}</code>
         </div>
       </div>
+
+      ${data.verdict !== 'BLOCKED' ? `
+      <!-- Apply & Create PR -->
+      <div class="result-card mt-6 text-center" id="pr-action-report">
+        ${data.verdict === 'RISKY' ? '<p class="text-risky text-sm mb-3">This migration has risks. Review the drifts above before proceeding.</p>' : ''}
+        <button id="btn-create-pr-report" class="px-6 py-3 rounded-lg font-semibold text-lg transition-all
+          ${data.verdict === 'SAFE' ? 'bg-safe/20 text-safe hover:bg-safe/30 border border-safe/30' : 'bg-risky/20 text-risky hover:bg-risky/30 border border-risky/30'}">
+          ${data.verdict === 'SAFE' ? 'Apply & Create PR' : 'Confirm & Create PR'}
+        </button>
+      </div>` : ''}
     `;
+
+    // Wire up PR button click
+    const prBtn = document.getElementById('btn-create-pr-report');
+    if (prBtn) {
+      prBtn.addEventListener('click', () => createPR());
+    }
+  }
+
+  async function createPR() {
+    const sid = State.getSession();
+    if (!sid) return;
+
+    const reportData = State.getResult('report');
+    if (reportData && reportData.verdict === 'RISKY') {
+      if (!confirm('This migration has risks. Are you sure you want to create a PR?')) return;
+    }
+
+    // Disable both report and diff buttons
+    const reportBtn = document.getElementById('btn-create-pr-report');
+    const diffBtn = document.getElementById('btn-create-pr-diff');
+    if (reportBtn) { reportBtn.disabled = true; reportBtn.textContent = 'Creating PR...'; }
+    if (diffBtn) { diffBtn.disabled = true; diffBtn.textContent = 'Creating PR...'; }
+
+    try {
+      const result = await API.createPR(sid);
+      const container = document.getElementById('pr-action-report');
+      const diffContainer = document.getElementById('pr-action-diff');
+
+      if (result.status === 'created' && result.pr_url) {
+        const successHtml = `
+          <div class="p-4 rounded-lg bg-safe/10 border border-safe/30">
+            <p class="text-safe font-semibold mb-2">PR Created Successfully</p>
+            <a href="${_esc(result.pr_url)}" target="_blank" rel="noopener"
+               class="text-accent-light underline hover:text-white">${_esc(result.pr_url)}</a>
+            <p class="text-gray-500 text-xs mt-2">Branch: ${_esc(result.branch)}</p>
+          </div>`;
+        if (container) container.innerHTML = successHtml;
+        if (diffContainer) diffContainer.innerHTML = successHtml;
+        Toast.success('PR created successfully!');
+      } else if (result.status === 'partial') {
+        const partialHtml = `
+          <div class="p-4 rounded-lg bg-risky/10 border border-risky/30">
+            <p class="text-risky font-semibold mb-2">Branch Pushed — PR Creation Failed</p>
+            <p class="text-gray-400 text-sm">${_esc(result.message)}</p>
+            <p class="text-gray-500 text-xs mt-2">Branch: <code>${_esc(result.branch)}</code></p>
+          </div>`;
+        if (container) container.innerHTML = partialHtml;
+        if (diffContainer) diffContainer.innerHTML = partialHtml;
+        Toast.info('Branch pushed, but PR creation failed. Create it manually.');
+      }
+    } catch (err) {
+      Toast.error(err.message || 'Failed to create PR');
+      // Re-enable buttons for retry
+      const reportBtn = document.getElementById('btn-create-pr-report');
+      const diffBtn = document.getElementById('btn-create-pr-diff');
+      if (reportBtn) { reportBtn.disabled = false; reportBtn.textContent = 'Retry Create PR'; }
+      if (diffBtn) { diffBtn.disabled = false; diffBtn.textContent = 'Retry Create PR'; }
+    }
   }
 
   function _renderRiskCard(risk) {
@@ -138,5 +206,5 @@ const ReportSection = (() => {
     return d.innerHTML;
   }
 
-  return {};
+  return { createPR };
 })();

@@ -22,7 +22,24 @@ CLIENT = openai.OpenAI(
 
 def _call_baseline_fix(filename: str, source: str) -> str:
     """Uses LLM to do bare-minimum syntax fixes for Py3 baseline execution."""
-    prompt = f"Fix the SYNTAX of this Python 2 code so it runs in Python 3.\n\nFile: {filename}\n```python\n{source}\n```\n\nONLY fix print, except, xrange, and unicode. DO NOT change logic. Return full code in a markdown block."
+    prompt = f"""Fix the SYNTAX of this Python 2 code so it runs in Python 3.
+
+File: {filename}
+```python
+{source}
+```
+
+Instructions:
+1. Wrap ALL print statements in parentheses. Handle multi-line prints correctly.
+   - WRONG: print("a", 
+                  "b")
+   - RIGHT: print("a", 
+                  "b")
+2. Change `except E, e:` to `except E as e:`.
+3. Change `xrange` to `range`.
+4. Remove `u` prefixes from strings (e.g. u"foo" -> "foo").
+5. DO NOT change logic or signatures.
+6. Return the FULL fixed code in a markdown block. No prose."""
     
     response = CLIENT.chat.completions.create(
         model=os.environ.get("LLM_MODEL", "google/gemini-2.0-flash-001"),

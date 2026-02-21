@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -341,6 +342,177 @@ async def apply_migration(session_id: str):
         return {"status": "applied", "repo_path": state.repo_path}
     except Exception as e:
         raise HTTPException(500, f"Failed to apply migration: {e}")
+
+
+@app.post("/create-pr/{session_id}", summary="Apply migration and create GitHub PR")
+async def create_pr(session_id: str):
+    """Create a branch, apply migrated files, commit, push, and open a GitHub PR."""
+    state = _get_state(session_id)
+    default_branch = os.environ.get("GIT_DEFAULT_BRANCH", "main")
+    repo = Path(state.repo_path)
+    branch_name = f"bloc/migration-{session_id}"
+
+    # ── Precondition checks ──────────────────────────────────────────
+    if not state.migrated_repo_path:
+        raise HTTPException(400, "No migration available to apply.")
+    if not state.confidence_report:
+        raise HTTPException(400, "Confidence report not yet generated.")
+    if state.confidence_report.verdict == "BLOCKED":
+        raise HTTPException(400, "Cannot create PR for a BLOCKED migration.")
+    if not (repo / ".git").is_dir():
+        raise HTTPException(400, f"Repository at {repo} is not a git repo.")
+
+    def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, timeout=60, **kw)
+
+    # Check gh CLI auth
+    gh_check = _run(["gh", "auth", "status"])
+    if gh_check.returncode != 0:
+        raise HTTPException(500, "GitHub CLI not authenticated. Run `gh auth login` first.")
+
+    # Check working tree is clean
+    status_result = _run(["git", "status", "--porcelain"])
+    if status_result.stdout.strip():
+        raise HTTPException(400, "Working tree is dirty. Please commit or stash changes first.")
+
+    # Check branch doesn't already exist
+    branch_check = _run(["git", "branch", "--list", branch_name])
+    if branch_check.stdout.strip():
+        raise HTTPException(400, f"Branch '{branch_name}' already exists. Delete it first or use a different session.")
+
+    # ── Create branch ────────────────────────────────────────────────
+    checkout_base = _run(["git", "checkout", default_branch])
+    if checkout_base.returncode != 0:
+        raise HTTPException(500, f"Failed to checkout {default_branch}: {checkout_base.stderr}")
+
+    create_branch = _run(["git", "checkout", "-b", branch_name])
+    if create_branch.returncode != 0:
+        raise HTTPException(500, f"Failed to create branch: {create_branch.stderr}")
+
+    try:
+        # ── Copy migrated files ──────────────────────────────────────
+        src = Path(state.migrated_repo_path)
+        for item in src.rglob("*"):
+            if item.is_file() and "_bloc_tests" not in str(item):
+                rel = item.relative_to(src)
+                target = repo / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+
+        # ── Stage + capture real diff ────────────────────────────────
+        _run(["git", "add", "-A"])
+        diff_result = _run(["git", "diff", "--cached"])
+        real_diff = diff_result.stdout
+
+        # If nothing changed, bail
+        if not real_diff.strip():
+            _run(["git", "checkout", default_branch])
+            _run(["git", "branch", "-D", branch_name])
+            raise HTTPException(400, "No changes detected after applying migration.")
+
+        # ── Commit ───────────────────────────────────────────────────
+        cr = state.confidence_report
+        commit_msg = (
+            f"bloc: apply migration [{cr.verdict}] "
+            f"(preservation={cr.behavior_preservation_pct:.1f}%, "
+            f"risk={cr.risk_score:.0%}, session={session_id})"
+        )
+        commit_result = _run(["git", "commit", "-m", commit_msg])
+        if commit_result.returncode != 0:
+            raise HTTPException(500, f"Git commit failed: {commit_result.stderr}")
+
+        # ── Push ─────────────────────────────────────────────────────
+        push_result = _run(["git", "push", "-u", "origin", branch_name])
+        if push_result.returncode != 0:
+            raise HTTPException(500, f"Git push failed: {push_result.stderr}")
+
+        # ── Create PR ────────────────────────────────────────────────
+        pr_body = _build_pr_body(state, session_id, real_diff)
+        pr_title = f"[B.LOC] Migration ({cr.verdict}) — session {session_id}"
+        pr_result = _run([
+            "gh", "pr", "create",
+            "--title", pr_title,
+            "--body", pr_body,
+            "--base", default_branch,
+            "--head", branch_name,
+        ])
+
+        if pr_result.returncode != 0:
+            # Partial success: pushed but PR creation failed
+            return {
+                "status": "partial",
+                "branch": branch_name,
+                "pr_url": None,
+                "message": f"Branch pushed but PR creation failed: {pr_result.stderr}. Create PR manually.",
+            }
+
+        # Extract PR URL from gh output
+        pr_url = pr_result.stdout.strip()
+
+        return {
+            "status": "created",
+            "branch": branch_name,
+            "pr_url": pr_url,
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions, but cleanup branch first
+        _run(["git", "checkout", default_branch])
+        _run(["git", "branch", "-D", branch_name])
+        raise
+    except Exception as e:
+        # Cleanup on unexpected failure
+        _run(["git", "checkout", default_branch])
+        _run(["git", "branch", "-D", branch_name])
+        raise HTTPException(500, f"Failed to create PR: {e}")
+
+
+def _build_pr_body(state: PipelineState, session_id: str, real_diff: str) -> str:
+    """Format the confidence report as a Markdown PR body."""
+    cr = state.confidence_report
+    verdict_emoji = {"SAFE": "\u2705", "RISKY": "\u26a0\ufe0f", "BLOCKED": "\u274c"}.get(cr.verdict, "\u2753")
+
+    lines = [
+        f"## {verdict_emoji} Migration Verdict: **{cr.verdict}**",
+        "",
+        f"> {cr.judge_summary}",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Risk Score | {cr.risk_score:.0%} |",
+        f"| Behavior Preservation | {cr.behavior_preservation_pct:.1f}% |",
+        f"| Critical Drifts | {cr.critical_drifts} |",
+        f"| Non-Critical Drifts | {cr.non_critical_drifts} |",
+        f"| Test Coverage | {cr.test_coverage_pct:.1f}% |",
+        f"| Session ID | `{session_id}` |",
+        "",
+        "### What Changed",
+        cr.what_changed,
+        "",
+        "### Why It Changed",
+        cr.why_it_changed,
+        "",
+    ]
+
+    # Changes breakdown from migration_patch
+    if state.migration_patch and state.migration_patch.changes:
+        lines.append("### Changes Breakdown")
+        lines.append("")
+        lines.append("| File | Line | Type | Description |")
+        lines.append("|------|------|------|-------------|")
+        for c in state.migration_patch.changes:
+            lines.append(f"| `{c.file}` | {c.lineno} | {c.change_type} | {c.description} |")
+        lines.append("")
+
+    lines.extend([
+        "### Rollback",
+        f"```bash\n{cr.rollback_command}\n```",
+        "",
+        "---",
+        "*Generated by [B.LOC](https://github.com/eli-bloc/BehaviourLock) — AI migration copilot*",
+    ])
+
+    return "\n".join(lines)
 
 
 @app.get("/patch/{session_id}", summary="Get migration patch (unified diff)")

@@ -63,5 +63,6 @@ const API = (() => {
     getDeadCode(sid)   { return _fetch(`/dead-code/${sid}`); },
     getRisk(sid)       { return _fetch(`/risk/${sid}`); },
     overrideRisk(sid)  { return _fetch(`/override-risk/${sid}`, { method: 'POST' }); },
+    createPR(sid)      { return _fetch(`/create-pr/${sid}`, { method: 'POST' }); },
   };
 })();

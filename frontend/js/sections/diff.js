@@ -29,6 +29,8 @@ const DiffSection = (() => {
         </ul>
       </div>` : ''}
 
+      ${_renderPRButton()}
+
       <!-- Diff Viewer -->
       <div class="result-card mb-4">
         <div id="diff-viewer"></div>
@@ -77,6 +79,12 @@ const DiffSection = (() => {
       </div>
     `;
 
+    // Wire up PR button click
+    const prBtn = document.getElementById('btn-create-pr-diff');
+    if (prBtn) {
+      prBtn.addEventListener('click', () => ReportSection.createPR());
+    }
+
     // Render diff2html
     if (data.unified_diff && typeof Diff2HtmlUI !== 'undefined') {
       try {
@@ -94,6 +102,19 @@ const DiffSection = (() => {
           `<pre class="text-xs text-gray-400 bg-bg rounded p-4 overflow-auto">${esc(data.unified_diff)}</pre>`;
       }
     }
+  }
+
+  function _renderPRButton() {
+    const report = State.getResult('report');
+    if (!report || report.verdict === 'BLOCKED') return '';
+    const isSafe = report.verdict === 'SAFE';
+    return `
+      <div class="result-card mb-4 text-center" id="pr-action-diff">
+        <button id="btn-create-pr-diff" class="px-5 py-2 rounded-lg font-semibold transition-all
+          ${isSafe ? 'bg-safe/20 text-safe hover:bg-safe/30 border border-safe/30' : 'bg-risky/20 text-risky hover:bg-risky/30 border border-risky/30'}">
+          ${isSafe ? 'Apply & Create PR' : 'Confirm & Create PR'}
+        </button>
+      </div>`;
   }
 
   function esc(s) {

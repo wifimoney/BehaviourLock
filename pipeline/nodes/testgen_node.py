@@ -31,12 +31,13 @@ Your job: given a Python function and its call graph context, generate a pytest 
 Rules:
 - Use pytest and unittest.mock ONLY — NO third-party libraries (no pytest-mock, no mocker fixture, no pytest-snapshot)
 - Use `with unittest.mock.patch(...)` or the `@patch` decorator for mocking — DO NOT use the `mocker` fixture
+- Use the FULL Module Path provided for imports (e.g. `from a.b.c import func` instead of `from c import func`)
 - Make fixtures deterministic (no random, no time.now())
 - If side effects are present, mock them and assert they were called
 - Output ONLY valid Python code — no markdown, no explanation
 - The test must be runnable standalone (include all imports)
 - Hardcode the expected "golden" strings/values directly in the test assertions
-- DO NOT use a `snapshot` or `mocker` fixture"""
+- DO NOT use a "snapshot" or "mocker" fixture"""
 
 TESTGEN_USER = """Generate a characterization test for this Python function.
 
