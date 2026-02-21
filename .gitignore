@@ -1,5 +1,6 @@
 # Secrets
 .env
+.env.local
 
 # Python
 __pycache__/
@@ -22,13 +23,6 @@ Thumbs.db
 _bloc_tests/
 _bloc_report.json
 bloc_upload_*
-.env
-.env.local
-__pycache__/
-*.pyc
-node_modules/
-.env
-.env.local
-__pycache__/
-*.pyc
+
+# Dependencies
 node_modules/
