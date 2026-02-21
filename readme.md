@@ -1,124 +1,91 @@
-# BehaviorLock (B.LOC)
+# 🛡️ BehaviorLock (B.LOC)
+### The AI Modernization Copilot that *Proves* Behavior Preservation.
 
-> AI modernization copilot that **proves behavior is preserved** while migrating legacy systems.
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
+[![LangGraph](https://img.shields.ok/badge/LangGraph-232F3E?style=for-the-badge)](https://langchain-ai.github.io/langgraph/)
+[![OpenRouter](https://img.shields.io/badge/Model-Gemini_2.0_Pro-blue?style=for-the-badge)](https://openrouter.ai)
+
+**BehaviorLock** is an agentic modernization platform designed for high-stakes legacy migrations (e.g., Python 2 to 3, COBOL to Java). Unlike generic code translators, B.LOC is a **trust engine**: it generates characterization tests, runs them on the baseline, migrates the code, and then *proves* behavioral parity before you ever hit merge.
 
 ---
 
-## Quickstart
+## 🔥 Features
+
+- **🧠 Multi-Agent Orchestration**: Powered by LangGraph and Gemini 2.0 Pro (via OpenRouter).
+- **📉 Trust Coverage**: A proprietary metric that surfaces the "safety gap" between generated tests and the entire codebase.
+- **⚡ Live Telemetry**: Real-time pipeline progress via Server-Sent Events (SSE).
+- **📝 Linkup (DocGen)**: A 4-agent documentation pipeline that writes technical docs, performs business logic QA, and proofreads automatically.
+- **🛡️ Behavior Parity Verification**: Automatic snapshot diffing between legacy and modernized outputs.
+- **🚧 Flake8 Gate**: Automated linting enforcement on every generated patch.
+
+---
+
+## 🚀 Quickstart
 
 ```bash
-# 1. Install
+# 1. Pipeline Setup
 pip install -r requirements.txt
 
-# 2. Set API key
-cp .env.example .env
-# Edit .env → add your ANTHROPIC_API_KEY
+# 2. Configure Environment
+# Copy .env.example -> .env and add your OPENROUTER_API_KEY
+# The project is optimized for google/gemini-2.0-pro-exp-02-05:free
 
-# 3. Run server
+# 3. Ignite the Engine
 python main.py
-# → http://localhost:8000
-# → Swagger UI: http://localhost:8000/docs
 ```
 
----
-
-## Project Structure
-
-```text
-BehaviourLock/
-├── main.py                          ← Uvicorn entry point
-├── requirements.txt                 ← Dependencies
-├── .env                             ← Context-specific configs
-├── api/
-│   └── app.py                       ← FastAPI endpoints
-├── models/
-│   └── state.py                     ← Pydantic state models
-├── pipeline/
-│   ├── graph.py                     ← LangGraph orchestrator
-│   └── nodes/                       ← Individual pipeline steps
-└── sample_legacy/
-    └── payment_processor.py         ← Golden demo candidate
-```
+- **Dashboard**: `http://localhost:8000`
+- **Interactive API**: `http://localhost:8000/docs`
 
 ---
 
-## Pipeline Architecture
+## 🏗️ The Pipeline
 
-```
-POST /ingest/path  →  session_id
-POST /run/{session_id}
-        │
-        ▼
-[1] ingest_node          (pure Python)  — normalize repo
-[2] workflow_miner_node  (pure Python)  — AST + networkx call graph
-[3] testgen_node         (Claude API)   — generate characterization tests
-[3b] baseline_runner_node (pure Python) — run tests, store snapshot
-[4] migrator_node        (LangChain)    — Py2→3 patch + flake8 gate
-[5] validator_node       (pure Python)  — re-run tests, diff snapshots
-[6] reporter_node        (Claude API)   — confidence card + verdict
-```
+B.LOC runs a high-fidelity 6-stage modernize-and-verify loop:
 
-**LLM usage:**
-- `testgen_node` → Direct `anthropic` SDK (tight prompt control)
-- `migrator_node` → LangChain `ChatAnthropic` + `JsonOutputParser`
-- `reporter_node` → Direct `anthropic` SDK (structured JSON output)
+1.  **Ingest**: Normalizes the legacy repository into a clean workspace.
+2.  **Workflow Miner**: Uses AST analysis and `networkx` to map the call graph and identify high-risk side effects.
+3.  **TestGen**: Gemini generates `pytest` characterization tests for entry points and critical logic.
+4.  **Baseline Runner**: Executes tests on the legacy code to capture "golden snapshots."
+5.  **Migrator**: LangChain-powered transformation (e.g., Py2→Py3) with an integrated Flake8 linting gate.
+6.  **Validator**: Re-runs the test suite on migrated code and performs a semantic snapshot diff.
+7.  **Reporter**: Generates a final **Confidence Card** with a verdict: `SAFE`, `RISKY`, or `BLOCKED`.
 
 ---
 
-## API Endpoints
+## 📝 Linkup: Documentation Intelligence
+The Linkup module adds a secondary documentation pipeline:
+- **Scanner Agent**: Parses signatures and side effects.
+- **Writer Agent**: Drafts comprehensive technical documentation.
+- **QA Agent**: Checks for business logic consistency.
+- **Proofreader Agent**: Polishes tone and ensures readiness.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/ingest/path` | Point at local repo path |
-| `POST` | `/ingest/upload` | Upload zip file |
-| `POST` | `/run/{session_id}` | Run full pipeline |
-| `GET`  | `/graph/{session_id}` | Cytoscape-format workflow graph |
-| `GET`  | `/tests/{session_id}` | Generated test suite |
-| `GET`  | `/baseline/{session_id}` | Baseline run results |
-| `GET`  | `/patch/{session_id}` | Migration patch (unified diff) |
-| `GET`  | `/validation/{session_id}` | Drift report |
-| `GET`  | `/report/{session_id}` | Final confidence card |
-| `GET`  | `/status/{session_id}` | Pipeline stage status |
-| `POST` | `/demo/seed` | Pre-seed golden demo session |
+Approved documentation can be automatically synced to Discord or Cody workflows.
 
 ---
 
-## Demo (90 seconds)
+## 📊 Verdict Logic
 
-```bash
-# 1. Seed the demo with the sample legacy repo
-curl -X POST "http://localhost:8000/demo/seed" \
-  -F "repo_path=$(pwd)/sample_legacy"
+We don't guess. We verify.
 
-# 2. Get the confidence report
-curl http://localhost:8000/report/demo
-```
-
----
-
-## Sample Legacy Repo
-
-`sample_legacy/payment_processor.py` — a Python 2 payment processor with:
-- `print` statements
-- `unicode` literals (`u"..."`)
-- `dict.iteritems()`
-- `xrange()`
-- Old `except E, e:` syntax
-- Dead code blocks
-- `os.environ` reads (side effect)
-
-Perfect for demo: clear Py2 patterns, real business logic, detectable drifts.
+| Verdict | Logic Criteria |
+| :--- | :--- |
+| **✅ SAFE** | ≥98% Behavior Preservation AND 0 Critical Drifts |
+| **⚠️ RISKY** | ≥85% Behavior Preservation OR ≤2 Critical Drifts |
+| **🚫 BLOCKED** | <85% Behavior Preservation OR >2 Critical Drifts |
 
 ---
 
-## Verdict Logic
-
-| Verdict | Condition |
-|---------|-----------|
-| `SAFE` | ≥98% behavior preserved AND 0 critical drifts |
-| `RISKY` | ≥85% preserved OR ≤2 critical drifts |
-| `BLOCKED` | <85% preserved OR >2 critical drifts |
+## 🛠️ Tech Stack
+- **Orchestration**: LangGraph (StateGraph)
+- **Intelligence**: Gemini 2.0 Pro (OpenRouter)
+- **API**: FastAPI + Uvicorn
+- **Analysis**: AST, NetworkX, Flake8
+- **Testing**: Pytest + JSON Reporting
+- **Streaming**: SSE (Server-Sent Events)
 
 ---
 
-*"Modernization speed without trust is useless. We deliver both."*
+> *"Modernization speed without trust is just technical debt in a new language. We provide the proof."*
+
+[Read the Technical Deep Dive →](TECHNICAL_README.md)
