@@ -28,7 +28,7 @@ pip install -r requirements.txt
 
 # 2. Configure Environment
 # Copy .env.example -> .env and add your OPENROUTER_API_KEY
-# The project is optimized for google/gemini-2.0-pro-exp-02-05:free
+# The project is optimized for google/gemini-2.0-flash-001
 
 # 3. Ignite the Engine
 python main.py

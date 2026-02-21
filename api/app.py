@@ -5,7 +5,6 @@ All endpoints for the pipeline + individual stage triggers.
 
 from __future__ import annotations
 import asyncio
-from asyncio import Event
 import os
 import shutil
 import tempfile
@@ -14,15 +13,13 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 
 from models.state import PipelineState
-from models.docgen_state import DocGenState, HumanReview
 from pipeline.graph import run_pipeline
-from pipeline.docgen_graph import run_docgen_pipeline
+from storage.memory import RepoMemory
 
 
 app = FastAPI(
@@ -42,7 +39,6 @@ app.add_middleware(
 # ─── In-memory session store (demo-grade) ─────────────────────────────────────
 # In prod: replace with Redis or DB
 _sessions: dict[str, PipelineState] = {}
-_docgen_sessions: dict[str, DocGenState] = {}
 
 
 # ─── Models ───────────────────────────────────────────────────────────────────
@@ -111,11 +107,15 @@ async def run_full_pipeline(session_id: str, target_module: Optional[str] = None
     if not session:
         raise HTTPException(404, f"Session {session_id} not found")
 
+    # Update session_id in the state itself
+    session.session_id = session_id
+
     async def _task():
         try:
             final_state = await run_pipeline(
                 repo_path=session.repo_path,
                 target_module=target_module or session.target_module,
+                session_id=session_id
             )
             _sessions[session_id] = final_state
         except Exception as e:
@@ -159,14 +159,6 @@ async def stream_pipeline(session_id: str, request: Request):
 
 
 # ─── Stage-specific endpoints (for incremental UI) ────────────────────────────
-
-@app.get("/dead-code/{session_id}", summary="Get dead code report")
-def get_dead_code(session_id: str):
-    state = _get_state(session_id)
-    if not state.dead_code_report:
-        raise HTTPException(404, "Dead code analysis not yet run.")
-    return state.dead_code_report.model_dump()
-
 
 @app.get("/graph/{session_id}", summary="Get workflow graph (Cytoscape format)")
 def get_graph(session_id: str):
@@ -255,98 +247,12 @@ def get_status(session_id: str):
         "stages_done": {
             "ingest":          bool(state.repo_path),
             "workflow_mined":  bool(state.workflow_graph),
-            "dead_code":       bool(state.dead_code_report),
             "tests_generated": bool(state.test_suite),
             "baseline_run":    bool(state.baseline_run),
             "patch_generated": bool(state.migration_patch),
             "validated":       bool(state.validation_result),
-        "report_ready":    bool(state.confidence_report),
+            "report_ready":    bool(state.confidence_report),
         },
-    }
-
-
-# ─── DocGen Endpoints (B.LOC Linkup) ──────────────────────────────────────────
-
-class DocGenRequest(BaseModel):
-    repo_path: str
-    target_module: Optional[str] = None
-
-
-@app.post("/docgen/run-direct", summary="Run DocGen pipeline (direct)")
-async def run_docgen_direct(req: DocGenRequest):
-    """Kicks off the 4-agent doc generation pipeline."""
-    import uuid
-    session_id = str(uuid.uuid4())[:8]
-
-    initial_state = DocGenState(
-        session_id=session_id,
-        repo_path=req.repo_path,
-        target_module=req.target_module,
-        current_stage="starting"
-    )
-    _docgen_sessions[session_id] = initial_state
-
-    # Run in background
-    async def _task():
-        try:
-            final_state = await asyncio.to_thread(run_docgen_pipeline, initial_state)
-            _docgen_sessions[session_id] = final_state
-        except Exception as e:
-            initial_state.error = str(e)
-            _docgen_sessions[session_id] = initial_state
-
-    asyncio.create_task(_task())
-
-    return {
-        "session_id": session_id,
-        "stage": "started",
-        "message": "DocGen pipeline initiated."
-    }
-
-
-@app.get("/docgen/draft/{session_id}", summary="Get full documentation draft")
-async def get_docgen_draft(session_id: str):
-    """Fetch the polished markdown and QA results."""
-    state = _docgen_sessions.get(session_id)
-    if not state:
-        raise HTTPException(404, f"DocGen session {session_id} not found")
-
-    if not state.proofread_output:
-        return {
-            "session_id": session_id,
-            "stage": state.current_stage,
-            "status": "pending",
-            "preview": "Still processing LLM agents..."
-        }
-
-    p = state.proofread_output
-    qa = state.qa_output
-    return {
-        "final_markdown":  p.final_markdown,
-        "qa_score":       qa.qa_score if qa else 0.0,
-        "issues_found":    qa.issues_found if qa else [],
-        "biz_logic_added": qa.biz_logic_added if qa else [],
-        "word_count":      p.word_count,
-        "preview":        p.final_markdown[:500]
-    }
-
-
-@app.post("/docgen/approve/{session_id}", summary="Approve or reject a draft")
-async def approve_docgen_draft(session_id: str, review: HumanReview):
-    """Final human-in-the-loop approval step."""
-    state = _docgen_sessions.get(session_id)
-    if not state:
-        raise HTTPException(404, f"DocGen session {session_id} not found")
-
-    from datetime import datetime
-    review.reviewed_at = datetime.now().isoformat()
-    state.human_review = review
-    state.current_stage = f"review_{review.status}"
-
-    return {
-        "session_id": session_id,
-        "status":     review.status,
-        "message":    f"Documentation {review.status} successfully."
     }
 
 
@@ -371,20 +277,256 @@ def _get_state(session_id: str) -> PipelineState:
     return state
 
 
-def _state_to_response(state: PipelineState) -> dict:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCGEN PIPELINE — 4-agent documentation generator + human-in-the-loop
+# ══════════════════════════════════════════════════════════════════════════════
+
+from datetime import datetime, timezone
+from models.docgen_state import DocGenState, DocGenRequest, HumanReview, ApprovalRequest
+from pipeline.docgen_graph import run_docgen_pipeline
+from utils.notifications import send_discord_notification
+
+_docgen_sessions: dict[str, DocGenState] = {}
+
+
+
+
+@app.post("/docgen/run/{session_id}")
+async def docgen_run(session_id: str):
+    """Trigger the 4-agent doc pipeline on an already-ingested session."""
+    pipeline_state = _sessions.get(session_id)
+    if not pipeline_state:
+        raise HTTPException(404, f"Session {session_id} not found — ingest first")
+
+    doc_state = DocGenState(
+        session_id=session_id,
+        repo_path=pipeline_state.repo_path,
+        target_module=pipeline_state.target_module,
+    )
+    _docgen_sessions[session_id] = doc_state
+
+    loop = asyncio.get_event_loop()
+    result: DocGenState = await loop.run_in_executor(None, run_docgen_pipeline, doc_state)
+    _docgen_sessions[session_id] = result
+
+    # ── Notify Discord ────────────────────────────────────────────────
+    if not result.error and result.proofread_output:
+        asyncio.create_task(send_discord_notification(
+            session_id=session_id,
+            qa_score=result.qa_output.qa_score if result.qa_output else 0,
+            word_count=result.proofread_output.word_count,
+            preview=result.proofread_output.final_markdown[:500],
+            ngrok_url=os.environ.get("BASE_URL", "http://localhost:8000")
+        ))
+
     return {
+        "session_id": session_id,
+        "stage": result.current_stage,
+        "error": result.error,
+        "ready_for_review": result.proofread_output.ready_for_review if result.proofread_output else False,
+        "qa_score": result.qa_output.qa_score if result.qa_output else None,
+        "word_count": result.proofread_output.word_count if result.proofread_output else 0,
+    }
+
+
+@app.post("/docgen/run-direct")
+async def docgen_run_direct(req: DocGenRequest):
+    """Run docgen without a pre-existing session (CodeWords / external callers)."""
+    import uuid
+    session_id = str(uuid.uuid4())[:8]
+
+    doc_state = DocGenState(
+        session_id=session_id,
+        repo_path=req.repo_path,
+        target_module=req.target_module,
+    )
+    _docgen_sessions[session_id] = doc_state
+
+    loop = asyncio.get_event_loop()
+    result: DocGenState = await loop.run_in_executor(None, run_docgen_pipeline, doc_state)
+    _docgen_sessions[session_id] = result
+
+    # ── Notify Discord ────────────────────────────────────────────────
+    if not result.error and result.proofread_output:
+        asyncio.create_task(send_discord_notification(
+            session_id=session_id,
+            qa_score=result.qa_output.qa_score if result.qa_output else 0,
+            word_count=result.proofread_output.word_count,
+            preview=result.proofread_output.final_markdown[:500],
+            ngrok_url=os.environ.get("BASE_URL", "http://localhost:8000")
+        ))
+
+    return {
+        "session_id": session_id,
+        "stage": result.current_stage,
+        "error": result.error,
+        "ready_for_review": result.proofread_output.ready_for_review if result.proofread_output else False,
+        "qa_score": result.qa_output.qa_score if result.qa_output else None,
+        "word_count": result.proofread_output.word_count if result.proofread_output else 0,
+        "preview": (result.proofread_output.final_markdown[:500] + "...") if result.proofread_output else "",
+    }
+
+
+@app.get("/docgen/draft/{session_id}")
+def docgen_draft(session_id: str):
+    """Get the final proofread markdown (ready for human review)."""
+    state = _docgen_sessions.get(session_id)
+    if not state:
+        raise HTTPException(404, f"DocGen session {session_id} not found")
+    if not state.proofread_output:
+        raise HTTPException(400, "Pipeline not complete yet")
+    return {
+        "session_id": session_id,
+        "final_markdown": state.proofread_output.final_markdown,
+        "word_count": state.proofread_output.word_count,
+        "qa_score": state.qa_output.qa_score if state.qa_output else None,
+        "changes_made": state.proofread_output.changes_made,
+        "issues_found": [i.model_dump() for i in state.qa_output.issues_found] if state.qa_output else [],
+        "biz_logic_added": state.qa_output.biz_logic_added if state.qa_output else [],
+        "human_review_status": state.human_review.status,
+    }
+
+
+@app.post("/docgen/approve/{session_id}")
+def docgen_approve(session_id: str, req: ApprovalRequest):
+    """
+    Human-in-the-loop approval endpoint.
+    POST {"status": "approved"} → marks doc as approved, returns final markdown.
+    POST {"status": "rejected", "comment": "..."} → flags for revision.
+    POST {"status": "revision_requested", "comment": "..."} → same but with notes.
+
+    This is the endpoint CodeWords (or Discord webhook) calls after you review.
+    """
+    state = _docgen_sessions.get(session_id)
+    if not state:
+        raise HTTPException(404, f"DocGen session {session_id} not found")
+
+    valid = {"approved", "rejected", "revision_requested"}
+    if req.status not in valid:
+        raise HTTPException(400, f"status must be one of {valid}")
+
+    state.human_review = HumanReview(
+        status=req.status,
+        reviewer_comment=req.comment,
+        reviewed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _docgen_sessions[session_id] = state
+
+    response = {
+        "session_id": session_id,
+        "review_status": req.status,
+        "reviewed_at": state.human_review.reviewed_at,
+    }
+
+    if req.status == "approved" and state.proofread_output:
+        response["final_markdown"] = state.proofread_output.final_markdown
+        # ── Persist approved doc to memory ────────────────────────────────
+        if state.repo_path:
+            try:
+                mem = RepoMemory(state.repo_path)
+                mem.record_approved_doc(session_id, state.proofread_output.final_markdown)
+                mem.record_docgen_run(
+                    session_id=session_id,
+                    qa_score=state.qa_output.qa_score if state.qa_output else None,
+                    word_count=state.proofread_output.word_count if state.proofread_output else None,
+                    final_markdown=state.proofread_output.final_markdown,
+                )
+                print(f"[approve] ✓ Approved doc saved to memory for repo: {mem.repo_id}")
+            except Exception as mem_err:
+                print(f"[approve] ⚠ Memory save failed (non-fatal): {mem_err}")
+
+    return response
+
+
+@app.get("/docgen/status/{session_id}")
+def docgen_status(session_id: str):
+    """Lightweight status check — CodeWords polls this."""
+    state = _docgen_sessions.get(session_id)
+    if not state:
+        raise HTTPException(404, f"DocGen session {session_id} not found")
+    return {
+        "session_id": session_id,
+        "stage": state.current_stage,
+        "error": state.error,
+        "human_review": state.human_review.status,
+        "iteration": state.iteration,
+    }
+
+
+# ─── Memory endpoints ─────────────────────────────────────────────────────────
+
+@app.get("/memory/stats")
+def memory_stats(repo_path: str):
+    """What has B.LOC learned about this repo so far?"""
+    try:
+        mem = RepoMemory(repo_path)
+        return mem.stats()
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/memory/drifts")
+def memory_drifts(repo_path: str):
+    """All drift patterns observed for this repo across runs."""
+    try:
+        mem = RepoMemory(repo_path)
+        return {"repo_id": mem.repo_id, "drifts": mem.known_drifts()}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/memory/runs")
+def memory_runs(repo_path: str, limit: int = 10):
+    """Migration run history for this repo."""
+    try:
+        mem = RepoMemory(repo_path)
+        return {"repo_id": mem.repo_id, "runs": mem.past_runs(limit)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/memory/docs")
+def memory_docs(repo_path: str, limit: int = 5):
+    """DocGen history for this repo."""
+    try:
+        mem = RepoMemory(repo_path)
+        return {"repo_id": mem.repo_id, "docgen_history": mem.docgen_history(limit)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/memory/search")
+def memory_search(repo_path: str, q: str, kind: str = "functions"):
+    """
+    Semantic search over memory for this repo.
+    kind: functions | drifts | biz_logic | docs
+    """
+    try:
+        mem = RepoMemory(repo_path)
+        dispatch = {
+            "functions": mem.search_functions,
+            "drifts":    mem.search_drifts,
+            "biz_logic": mem.search_biz_logic,
+            "docs":      mem.search_docs,
+        }
+        if kind not in dispatch:
+            raise HTTPException(400, f"kind must be one of {list(dispatch)}")
+        results = dispatch[kind](q)
+        return {"repo_id": mem.repo_id, "kind": kind, "query": q, "results": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+def _state_to_response(state: PipelineState) -> dict:    return {
         "current_stage": state.current_stage,
         "error":         state.error,
         "report":        state.confidence_report.model_dump() if state.confidence_report else None,
         "validation":    state.validation_result.model_dump() if state.validation_result else None,
-        "test_coverage": state.test_suite.coverage_pct if state.test_suite else 0.0,
         "patch_summary": {
             "total_changes": len(state.migration_patch.changes) if state.migration_patch else 0,
             "lint_passed":   state.migration_patch.lint_passed if state.migration_patch else None,
         } if state.migration_patch else None,
     }
-
-
-# ─── Static files (frontend dashboard) ──────────────────────────────────────
-# Must be mounted AFTER all API routes so /api routes take precedence
-app.mount("/", StaticFiles(directory=str(Path(__file__).parent.parent / "frontend"), html=True), name="frontend")

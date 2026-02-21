@@ -91,11 +91,12 @@ def get_pipeline() -> CompiledStateGraph:
     return _pipeline
 
 
-async def run_pipeline(repo_path: str, target_module: str | None = None) -> PipelineState:
+async def run_pipeline(repo_path: str, target_module: str | None = None, session_id: str = "") -> PipelineState:
     """Run the full pipeline and return the final PipelineState."""
     pipeline = get_pipeline()
 
     initial_state = PipelineState(
+        session_id=session_id,
         repo_path=repo_path,
         target_module=target_module,
         current_stage="starting",

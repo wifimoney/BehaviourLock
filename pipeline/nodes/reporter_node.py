@@ -11,6 +11,7 @@ import os
 import openai
 
 from models.state import PipelineState, ConfidenceReport
+from storage.memory import RepoMemory
 
 CLIENT = openai.OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -26,7 +27,6 @@ _USER = """Generate a confidence report for this migration.
 
 ## Validation Summary
 - Behavior preservation: {preservation_pct}%
-- Test coverage of codebase: {coverage_pct}%
 - Tests passing after migration: {passing}/{total}
 - Critical drifts (logic changed): {critical_count}
 - Non-critical drifts (cosmetic): {non_critical_count}
@@ -78,19 +78,36 @@ def reporter_node(state: PipelineState) -> PipelineState:
         passing = sum(1 for r in vr.migrated_results if r.passed)
         total   = len(vr.migrated_results)
 
+        # ── Pull proactive warnings from memory ───────────────────────────
+        warnings_block = ""
+        try:
+            mem = RepoMemory(state.repo_path)
+            patch_changes = []
+            if state.migration_patch and state.migration_patch.changes:
+                patch_changes = [c.model_dump() for c in state.migration_patch.changes]
+            warnings = mem.proactive_warnings(patch_changes)
+            if warnings:
+                lines = ["\n## ⚠️ Memory Warnings (patterns seen in previous runs)"]
+                for w in warnings:
+                    badge = "🔴" if w["severity"] == "critical" else "🟡"
+                    lines.append(f"{badge} {w['function']}: {w['message']}")
+                warnings_block = "\n".join(lines)
+                print(f"[reporter] ⚠ {len(warnings)} memory warning(s) injected")
+        except Exception as mem_err:
+            print(f"[reporter] ⚠ Memory read failed (non-fatal): {mem_err}")
+
         prompt = _USER.format(
             preservation_pct=vr.behavior_preservation_pct,
-            coverage_pct=state.test_suite.coverage_pct if state.test_suite else 0.0,
             passing=passing,
             total=total,
             critical_count=vr.critical_drift_count,
             non_critical_count=vr.non_critical_drift_count,
             drift_details=drift_details,
             changes_summary=changes_summary,
-        )
+        ) + warnings_block
 
         response = CLIENT.chat.completions.create(
-            model="google/gemini-2.0-pro-exp-02-05:free",
+            model="google/gemini-2.0-flash-001",
             max_tokens=1024,
             messages=[
                 {"role": "system", "content": _SYSTEM},
@@ -115,12 +132,28 @@ def reporter_node(state: PipelineState) -> PipelineState:
             what_changed=data.get("what_changed", ""),
             why_it_changed=data.get("why_it_changed", ""),
             rollback_command=data.get("rollback_command", "git stash pop"),
-            test_coverage_pct=state.test_suite.coverage_pct if state.test_suite else 0.0,
             risk_score=float(data.get("risk_score", 0.5)),
             judge_summary=data.get("judge_summary", ""),
         )
 
         print(f"[reporter] ✓ Verdict: {report.verdict} | Risk score: {report.risk_score:.2f}")
+
+        # ── Persist run to memory ─────────────────────────────────────────
+        try:
+            mem = RepoMemory(state.repo_path)
+            patch_changes = []
+            if state.migration_patch and state.migration_patch.changes:
+                patch_changes = [c.model_dump() for c in state.migration_patch.changes]
+            mem.record_run(
+                session_id=state.session_id or "unknown",
+                verdict=report.verdict,
+                preservation_pct=report.behavior_preservation_pct,
+                critical_drifts=report.critical_drifts,
+                patch_changes=patch_changes,
+            )
+            print(f"[reporter] ✓ Run saved to memory for repo: {mem.repo_id}")
+        except Exception as mem_err:
+            print(f"[reporter] ⚠ Memory save failed (non-fatal): {mem_err}")
 
         return state.model_copy(update={
             "confidence_report": report,

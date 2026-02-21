@@ -149,7 +149,7 @@ def _call_claude_testgen(
     )
 
     response = CLIENT.chat.completions.create(
-        model="google/gemini-2.0-pro-exp-02-05:free",
+        model="google/gemini-2.0-flash-001",
         max_tokens=2048,
         messages=[
             {"role": "system", "content": TESTGEN_SYSTEM},

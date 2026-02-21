@@ -81,6 +81,18 @@ class HumanReview(BaseModel):
     reviewed_at: Optional[str] = None
 
 
+# ─── Requests ─────────────────────────────────────────────────────────────────
+
+class DocGenRequest(BaseModel):
+    repo_path: str
+    target_module: Optional[str] = None
+
+
+class ApprovalRequest(BaseModel):
+    status: str           # "approved" | "rejected" | "revision_requested"
+    comment: Optional[str] = None
+
+
 # ─── Master DocGen state ──────────────────────────────────────────────────────
 
 class DocGenState(BaseModel):

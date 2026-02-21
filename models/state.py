@@ -136,6 +136,7 @@ class ConfidenceReport(BaseModel):
 
 class PipelineState(BaseModel):
     # Input
+    session_id: str = ""
     repo_path: str = ""
     target_module: Optional[str] = None
 

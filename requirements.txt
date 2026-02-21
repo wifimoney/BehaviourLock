@@ -13,3 +13,5 @@ openai
 langchain-openai
 sse-starlette
 python-dotenv
+chromadb
+aiofiles
