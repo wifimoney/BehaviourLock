@@ -44,7 +44,8 @@ Return ONLY valid JSON:
         response = client.chat.completions.create(
             model="google/gemini-3.1-pro-preview",
             max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
 
         text = response.choices[0].message.content.strip()

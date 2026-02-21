@@ -1,5 +1,6 @@
 import json
 import re
+import ast as py_ast
 
 def parse_json_robust(text: str) -> dict:
     """Try to extract a JSON block from LLM output even if there's conversational fluff."""
@@ -25,9 +26,28 @@ def parse_json_robust(text: str) -> dict:
         try:
             # Clean up potential common issues like control characters
             cleaned = re.sub(r"[\x00-\x1F\x7F]", "", match.group(1))
+            
+            # Remove trailing commas in objects/arrays (common LLM mistake)
+            cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
+            
             return json.loads(cleaned)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            # Last ditch effort: try cleaning up even more if it looks like markdown was escaped
+            try:
+                second_cleaned = cleaned.replace('\\"', '"').replace('\\n', '\n')
+                return json.loads(second_cleaned)
+            except:
+                pass
+            
+            print(f"[json_utils] Final parse attempt failed: {e}")
+            
+            # Try 4. Python literal eval as extreme fallback
+            try:
+                return py_ast.literal_eval(cleaned)
+            except:
+                pass
+            
             pass
             
     # Raise the original error or a generic one
-    raise ValueError("Could not parse JSON from LLM response")
+    raise ValueError(f"Could not parse JSON from LLM response. Text started with: {text[:100]}...")

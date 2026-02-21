@@ -31,7 +31,7 @@ pip install -r requirements.txt
 # The project is optimized for google/gemini-3.1-pro-preview
 
 # 3. Ignite the Engine
-python main.py
+python3 main.py
 ```
 
 - **Dashboard**: `http://localhost:8000`

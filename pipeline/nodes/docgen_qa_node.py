@@ -92,7 +92,8 @@ def qa_node(state: DocGenState) -> DocGenState:
         response = client.chat.completions.create(
             model="google/gemini-3.1-pro-preview",
             max_tokens=8192,
-            messages=[{"role": "user", "content": _build_qa_prompt(state, memory_biz)}]
+            messages=[{"role": "user", "content": _build_qa_prompt(state, memory_biz)}],
+            response_format={"type": "json_object"}
         )
 
         text = response.choices[0].message.content.strip()

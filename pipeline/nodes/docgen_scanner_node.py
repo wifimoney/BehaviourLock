@@ -158,7 +158,8 @@ Return ONLY valid JSON with this exact schema:
     response = client.chat.completions.create(
         model="google/gemini-3.1-pro-preview",
         max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
     )
 
     text = response.choices[0].message.content.strip()

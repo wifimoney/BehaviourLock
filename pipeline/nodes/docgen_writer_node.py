@@ -108,7 +108,8 @@ def writer_node(state: DocGenState) -> DocGenState:
         response = client.chat.completions.create(
             model="google/gemini-3.1-pro-preview",
             max_tokens=8192,
-            messages=[{"role": "user", "content": _build_writer_prompt(state, memory_context)}]
+            messages=[{"role": "user", "content": _build_writer_prompt(state, memory_context)}],
+            response_format={"type": "json_object"}
         )
 
         text = response.choices[0].message.content.strip()
