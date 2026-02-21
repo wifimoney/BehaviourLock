@@ -8,10 +8,10 @@ from typing import Any
 
 from openai import OpenAI
 
-from behaviour_lock.db import Database
-from behaviour_lock.memory import attach_knowledge_node, format_tree_text
+from behaviour_lock.infrastructure.db import Database
+from behaviour_lock.infrastructure.rag import RAGStore
 from behaviour_lock.prompts import PLAN_GENERATION_PROMPT, SYSTEM_PROMPT
-from behaviour_lock.rag import RAGStore
+from behaviour_lock.services.memory import attach_knowledge_node, format_tree_text
 
 MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
@@ -257,7 +257,7 @@ TOOLS = [
 
 
 class Agent:
-    def __init__(self, db: Database, rag: RAGStore):
+    def __init__(self, db: Database, rag: RAGStore, messages: list[dict[str, Any]] | None = None):
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=os.environ.get("OPENROUTER_API_KEY", ""),
@@ -265,9 +265,10 @@ class Agent:
         self.db = db
         self.rag = rag
         self.confirm_fn: Any = None  # (kind, summary, content, context) -> ("yes"|"no"|"refine", feedback)
-        self.messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-        ]
+        if messages is not None:
+            self.messages: list[dict[str, Any]] = messages
+        else:
+            self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     def chat(self, user_message: str) -> str:
         """Send a user message, handle tool calls in a loop, return final text response."""
