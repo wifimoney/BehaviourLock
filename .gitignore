@@ -22,3 +22,8 @@ Thumbs.db
 _bloc_tests/
 _bloc_report.json
 bloc_upload_*
+.env
+.env.local
+__pycache__/
+*.pyc
+node_modules/
