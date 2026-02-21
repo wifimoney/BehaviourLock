@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import openai
@@ -150,25 +151,21 @@ def _call_claude_testgen(
 
     response = CLIENT.chat.completions.create(
         model="google/gemini-3.1-pro-preview",
-        max_tokens=2048,
+        max_tokens=4096,
         messages=[
             {"role": "system", "content": TESTGEN_SYSTEM},
             {"role": "user", "content": prompt}
         ],
+        response_format={"type": "json_object"}
     )
 
     raw = response.choices[0].message.content.strip()
 
-    # Strip markdown fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
-
+    from utils.json_utils import parse_json_robust
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
+        return parse_json_robust(raw)
+    except Exception as e:
+        print(f"[testgen] ❌ JSON Error: {e}")
         # Attempt to salvage — wrap in minimal structure
         return {"test_code": raw, "snapshot_inputs": [], "covers_side_effects": False}
 
@@ -191,13 +188,26 @@ def _extract_function_source(repo_path: str, module: str, fn_name: str) -> str |
             continue
         try:
             source = candidate.read_text(encoding="utf-8", errors="replace")
-            tree   = _ast.parse(source)
-            for node in _ast.walk(tree):
-                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
-                    if node.name == fn_name:
-                        lines = source.splitlines()
-                        end   = node.end_lineno or (node.lineno + 20)
-                        return "\n".join(lines[node.lineno - 1: end])
+            try:
+                tree = _ast.parse(source)
+                for node in _ast.walk(tree):
+                    if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        if node.name == fn_name:
+                            lines = source.splitlines()
+                            end   = node.end_lineno or (node.lineno + 20)
+                            return "\n".join(lines[node.lineno - 1: end])
+            except SyntaxError:
+                # Regex fallback for legacy Python 2
+                lines = source.splitlines()
+                pattern = re.compile(rf"^\s*def\s+{fn_name}\s*\(")
+                for i, line in enumerate(lines):
+                    if pattern.match(line):
+                        # Find end by looking for next non-indented def or class or end of file
+                        start = i
+                        for j in range(i + 1, len(lines)):
+                            if lines[j].strip() and not lines[j].startswith(" "):
+                                return "\n".join(lines[start:j])
+                        return "\n".join(lines[start:])
         except Exception:
             continue
     return None

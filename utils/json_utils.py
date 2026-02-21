@@ -20,12 +20,14 @@ def parse_json_robust(text: str) -> dict:
         except json.JSONDecodeError:
             pass
             
-    # 3. Try to find first { and last }
-    match = re.search(r"({.*})", text, re.DOTALL)
-    if match:
+    # 3. Try to find first { and last } (Widest match)
+    start_index = text.find('{')
+    end_index = text.rfind('}')
+    if start_index != -1 and end_index != -1 and end_index > start_index:
+        cleaned = text[start_index : end_index + 1]
         try:
             # Clean up potential common issues like control characters
-            cleaned = re.sub(r"[\x00-\x1F\x7F]", "", match.group(1))
+            cleaned = re.sub(r"[\x00-\x1F\x7F]", "", cleaned)
             
             # Remove trailing commas in objects/arrays (common LLM mistake)
             cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
@@ -39,15 +41,15 @@ def parse_json_robust(text: str) -> dict:
             except:
                 pass
             
-            print(f"[json_utils] Final parse attempt failed: {e}")
-            
             # Try 4. Python literal eval as extreme fallback
             try:
+                # py_ast.literal_eval is safer than eval()
                 return py_ast.literal_eval(cleaned)
             except:
                 pass
             
+            print(f"[json_utils] Final parse attempt failed: {e}")
             pass
             
     # Raise the original error or a generic one
-    raise ValueError(f"Could not parse JSON from LLM response. Text started with: {text[:100]}...")
+    raise ValueError(f"Could not parse JSON from LLM response. Length: {len(text)}. Text started with: {text[:100]}...")

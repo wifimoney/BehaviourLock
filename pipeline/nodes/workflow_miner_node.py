@@ -7,9 +7,10 @@ No LLM needed.
 
 from __future__ import annotations
 import ast
+import re
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import networkx as nx
 
@@ -145,21 +146,26 @@ def _build_call_graph(
         if target_module and target_module not in mod_name:
             continue
 
+        source = py_file.read_text(encoding="utf-8", errors="replace")
         try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source)
-        except SyntaxError:
-            # Python 2 syntax — still extract what we can
-            source = py_file.read_text(encoding="utf-8", errors="replace")
-            try:
-                import ast as _ast
-                tree = _ast.parse(source, feature_version=(2, 7))
-            except Exception:
-                continue
+        except (SyntaxError, ValueError):
+            # Python 2 syntax or Python 3.13+ removing feature_version=(2,7)
+            tree = None
 
         visitor = _CallVisitor(mod_name)
-        visitor.visit(tree)
-        all_functions.update(visitor.functions)
+        if tree:
+            try:
+                visitor.visit(tree)
+                all_functions.update(visitor.functions)
+            except Exception:
+                # Fallback to regex-based extraction for broken/legacy files
+                regex_funcs = _regex_extract_functions(source, mod_name)
+                all_functions.update(regex_funcs)
+        else:
+            # Fallback to regex-based extraction for broken/legacy files
+            regex_funcs = _regex_extract_functions(source, mod_name)
+            all_functions.update(regex_funcs)
 
     # Build nodes
     call_nodes: list[CallNode] = []
@@ -236,3 +242,29 @@ def _file_to_module(py_file: Path, repo_root: str) -> str:
     else:
         parts[-1] = parts[-1].replace(".py", "")
     return ".".join(parts) if parts else "root"
+def _regex_extract_functions(source: str, module_name: str) -> dict[str, dict]:
+    """Fallback to find functions via regex when AST fails on legacy code."""
+    funcs = {}
+    # Simple regex for 'def func_name(args):'
+    pattern = re.compile(r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", re.MULTILINE)
+    
+    for i, line in enumerate(source.splitlines()):
+        match = pattern.match(line)
+        if match:
+            fn_name = match.group(1)
+            qname = f"{module_name}.{fn_name}"
+            funcs[qname] = {
+                "lineno": i + 1,
+                "calls": [],
+                "side_effects": [],
+            }
+            # Look for obvious side effects in the following lines (very basic)
+            body_start = i + 1
+            for j in range(body_start, min(body_start + 50, len(source.splitlines()))):
+                l = source.splitlines()[j]
+                if l.strip() and not l.startswith(" "):
+                    break # end of function indent
+                for effect_type, patterns in SIDE_EFFECT_PATTERNS.items():
+                    if any(p in l for p in patterns):
+                        funcs[qname]["side_effects"].append(effect_type)
+    return funcs

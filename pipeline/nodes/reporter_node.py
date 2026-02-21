@@ -113,16 +113,12 @@ def reporter_node(state: PipelineState) -> PipelineState:
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": prompt}
             ],
+            response_format={"type": "json_object"}
         )
 
         raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
-
-        data = json.loads(raw)
+        from utils.json_utils import parse_json_robust
+        data = parse_json_robust(raw)
 
         report = ConfidenceReport(
             verdict=data["verdict"],

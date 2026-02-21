@@ -13,7 +13,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 
@@ -62,6 +63,17 @@ class SessionResponse(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "BehaviorLock"}
+
+
+# ─── Frontend ─────────────────────────────────────────────────────────────────
+
+@app.get("/")
+async def serve_index():
+    return FileResponse(Path("frontend/index.html"))
+
+# Serve CSS and JS directories
+app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
+app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
 
 
 # ─── Ingest ───────────────────────────────────────────────────────────────────
