@@ -98,6 +98,28 @@ class ValidationResult(BaseModel):
     behavior_preservation_pct: float
 
 
+# ─── Risk assessment ─────────────────────────────────────────────────────
+
+class RiskWarning(BaseModel):
+    source: Literal["memory", "rag", "heuristic"]
+    function: str
+    severity: Literal["critical", "non_critical"]
+    message: str
+    times_seen: int = 1
+
+
+class RiskAssessment(BaseModel):
+    risk_score: float                         # 0.0 → 1.0
+    risk_level: Literal["low", "medium", "high", "blocked"]
+    warnings: list[RiskWarning]
+    known_drift_count: int
+    past_run_count: int
+    worst_historical_verdict: Optional[str]   # from past runs
+    side_effect_density: float
+    test_coverage_gap: float
+    computed_at: str                          # ISO timestamp
+
+
 # ─── Dead code detection ─────────────────────────────────────────────────────
 
 class DeadCodeItem(BaseModel):
@@ -145,6 +167,7 @@ class PipelineState(BaseModel):
     dead_code_report: Optional[DeadCodeReport] = None
     test_suite: Optional[TestSuite] = None
     baseline_run: Optional[BaselineRun] = None
+    risk_assessment: Optional[RiskAssessment] = None
     migration_patch: Optional[MigrationPatch] = None
     validation_result: Optional[ValidationResult] = None
     confidence_report: Optional[ConfidenceReport] = None

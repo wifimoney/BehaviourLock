@@ -30,7 +30,7 @@ class PatchOutput(LCBaseModel):
 # ─── LangChain chain ──────────────────────────────────────────────────────────
 
 _llm = ChatOpenAI(
-    model="google/gemini-2.0-flash-001",
+    model="google/gemini-3.1-pro-preview",
     openai_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
     openai_api_base="https://openrouter.ai/api/v1",
     max_tokens=4096,

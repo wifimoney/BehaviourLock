@@ -107,7 +107,7 @@ def reporter_node(state: PipelineState) -> PipelineState:
         ) + warnings_block
 
         response = CLIENT.chat.completions.create(
-            model="google/gemini-2.0-flash-001",
+            model="google/gemini-3.1-pro-preview",
             max_tokens=1024,
             messages=[
                 {"role": "system", "content": _SYSTEM},

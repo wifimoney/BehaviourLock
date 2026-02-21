@@ -18,7 +18,10 @@ from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 
 from models.state import PipelineState
-from pipeline.graph import run_pipeline
+from pipeline.graph import run_pipeline, get_pipeline, _wrap
+from pipeline.nodes.migrator_node  import migrator_node
+from pipeline.nodes.validator_node import validator_node
+from pipeline.nodes.reporter_node  import reporter_node
 from storage.memory import RepoMemory
 
 
@@ -131,6 +134,7 @@ async def stream_pipeline(session_id: str, request: Request):
     """Server-Sent Events endpoint for live progress bar."""
     async def event_generator():
         last_stage = None
+        last_drift_count = None
         while True:
             if await request.is_disconnected():
                 break
@@ -141,16 +145,45 @@ async def stream_pipeline(session_id: str, request: Request):
                 break
 
             if state.current_stage != last_stage or state.error:
-                yield {
-                    "data": {
-                        "stage": state.current_stage,
-                        "error": state.error,
-                        "done":  state.current_stage == "complete" or bool(state.error)
-                    }
+                event_data = {
+                    "stage": state.current_stage,
+                    "error": state.error,
+                    "done":  state.current_stage == "complete" or bool(state.error),
                 }
+
+                # Emit risk assessment when risk gate completes
+                if state.risk_assessment and state.current_stage in ("risk_analyzed", "risk_blocked"):
+                    ra = state.risk_assessment
+                    event_data["risk"] = {
+                        "risk_score": ra.risk_score,
+                        "risk_level": ra.risk_level,
+                        "warnings": [w.model_dump() for w in ra.warnings],
+                        "blocked": state.current_stage == "risk_blocked",
+                    }
+
+                # Treat risk_blocked as SSE terminal state (pipeline paused)
+                if state.current_stage == "risk_blocked":
+                    event_data["done"] = True
+
+                yield {"data": event_data}
                 last_stage = state.current_stage
 
-            if state.current_stage == "complete" or state.error:
+            # Emit live drift counts during validation
+            if state.validation_result:
+                drift_count = (state.validation_result.critical_drift_count +
+                               state.validation_result.non_critical_drift_count)
+                if drift_count != last_drift_count:
+                    yield {"data": {
+                        "stage": state.current_stage,
+                        "drifts": {
+                            "total": drift_count,
+                            "critical": state.validation_result.critical_drift_count,
+                            "non_critical": state.validation_result.non_critical_drift_count,
+                        },
+                    }}
+                    last_drift_count = drift_count
+
+            if state.current_stage == "complete" or state.error or state.current_stage == "risk_blocked":
                 break
 
             await asyncio.sleep(0.5)
@@ -213,6 +246,41 @@ def get_baseline(session_id: str):
     return state.baseline_run.model_dump()
 
 
+@app.get("/risk/{session_id}", summary="Get risk assessment")
+def get_risk(session_id: str):
+    state = _get_state(session_id)
+    if not state.risk_assessment:
+        raise HTTPException(404, "Risk assessment not yet computed.")
+    return state.risk_assessment.model_dump()
+
+
+@app.post("/override-risk/{session_id}", summary="Override risk block and continue pipeline")
+async def override_risk(session_id: str):
+    """Override a risk-blocked pipeline and run remaining stages."""
+    state = _get_state(session_id)
+    if state.current_stage != "risk_blocked":
+        raise HTTPException(400, f"Session is not risk-blocked (current stage: {state.current_stage})")
+
+    state.current_stage = "risk_overridden"
+    _sessions[session_id] = state
+
+    async def _resume():
+        try:
+            # Run remaining nodes sequentially: migrator → validator → reporter
+            ps = state
+            for node_fn in [migrator_node, validator_node, reporter_node]:
+                ps = node_fn(ps)
+                _sessions[session_id] = ps
+                if ps.error:
+                    break
+        except Exception as e:
+            ps.error = str(e)
+            _sessions[session_id] = ps
+
+    asyncio.create_task(_resume())
+    return {"status": "overridden", "session_id": session_id}
+
+
 @app.get("/patch/{session_id}", summary="Get migration patch (unified diff)")
 def get_patch(session_id: str):
     state = _get_state(session_id)
@@ -249,6 +317,7 @@ def get_status(session_id: str):
             "workflow_mined":  bool(state.workflow_graph),
             "tests_generated": bool(state.test_suite),
             "baseline_run":    bool(state.baseline_run),
+            "risk_assessed":   bool(state.risk_assessment),
             "patch_generated": bool(state.migration_patch),
             "validated":       bool(state.validation_result),
             "report_ready":    bool(state.confidence_report),

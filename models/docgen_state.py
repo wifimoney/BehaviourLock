@@ -52,7 +52,7 @@ class WriterDraft(BaseModel):
 
 class QAIssue(BaseModel):
     section: str
-    issue_type: Literal["missing_context", "inaccurate", "missing_biz_logic", "ambiguous"]
+    issue_type: str  # Flexible for different model versions
     description: str
     suggested_fix: str
 

@@ -16,6 +16,7 @@ from pipeline.nodes.workflow_miner_node  import workflow_miner_node
 from pipeline.nodes.dead_code_node       import dead_code_node
 from pipeline.nodes.testgen_node         import testgen_node
 from pipeline.nodes.baseline_runner_node import baseline_runner_node
+from pipeline.nodes.risk_gate_node       import risk_gate_node
 from pipeline.nodes.migrator_node        import migrator_node
 from pipeline.nodes.validator_node       import validator_node
 from pipeline.nodes.reporter_node        import reporter_node
@@ -26,6 +27,15 @@ from pipeline.nodes.reporter_node        import reporter_node
 def _route(state: PipelineState) -> str:
     """If any node sets an error, abort the pipeline immediately."""
     return END if state.error else "continue"
+
+
+def _route_risk_gate(state: dict) -> str:
+    """Route after risk gate: abort on error/blocked, continue to migrator otherwise."""
+    if state.get("error"):
+        return END
+    if state.get("current_stage") == "risk_blocked":
+        return END  # paused, awaiting override
+    return "migrator"
 
 
 # ─── Build graph ──────────────────────────────────────────────────────────────
@@ -40,6 +50,7 @@ def build_pipeline() -> CompiledStateGraph:
     builder.add_node("dead_code",       _wrap(dead_code_node))
     builder.add_node("testgen",         _wrap(testgen_node))
     builder.add_node("baseline_runner", _wrap(baseline_runner_node))
+    builder.add_node("risk_gate",       _wrap(risk_gate_node))
     builder.add_node("migrator",        _wrap(migrator_node))
     builder.add_node("validator",       _wrap(validator_node))
     builder.add_node("reporter",        _wrap(reporter_node))
@@ -52,7 +63,15 @@ def build_pipeline() -> CompiledStateGraph:
     _add_conditional(builder, "workflow_miner",  "dead_code")
     _add_conditional(builder, "dead_code",       "testgen")
     _add_conditional(builder, "testgen",         "baseline_runner")
-    _add_conditional(builder, "baseline_runner", "migrator")
+    _add_conditional(builder, "baseline_runner", "risk_gate")
+
+    # Risk gate: conditional routing (error → END, risk_blocked → END, else → migrator)
+    builder.add_conditional_edges(
+        "risk_gate",
+        _route_risk_gate,
+        {"migrator": "migrator", END: END},
+    )
+
     _add_conditional(builder, "migrator",        "validator")
     _add_conditional(builder, "validator",       "reporter")
 

@@ -156,18 +156,18 @@ Return ONLY valid JSON with this exact schema:
 }}"""
 
     response = client.chat.completions.create(
-        model="google/gemini-2.0-flash-001",
+        model="google/gemini-3.1-pro-preview",
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     text = response.choices[0].message.content.strip()
-    # Strip markdown fences if present
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return parse_json_robust(text)
+    try:
+        return parse_json_robust(text)
+    except Exception as e:
+        print(f"[scanner] ❌ JSON Parse Error: {e}")
+        print(f"[scanner] 📄 Raw LLM Output:\n{text}")
+        raise e
 
 
 from utils.json_utils import parse_json_robust
