@@ -90,7 +90,7 @@ def qa_node(state: DocGenState) -> DocGenState:
                 print(f"[qa] ⚠ Memory read failed (non-fatal): {mem_err}")
 
         response = client.chat.completions.create(
-            model="google/gemini-3.1-pro-preview",
+            model="google/gemini-2.0-flash-001",
             max_tokens=8192,
             messages=[{"role": "user", "content": _build_qa_prompt(state, memory_biz)}],
             response_format={"type": "json_object"}

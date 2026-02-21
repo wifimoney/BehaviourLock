@@ -19,10 +19,16 @@ from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
 
 from models.state import PipelineState
-from pipeline.graph import run_pipeline
-from pipeline.nodes.migrator_node  import migrator_node
+from pipeline.graph import get_pipeline
+from pipeline.nodes.ingest_node import ingest_node
+from pipeline.nodes.workflow_miner_node import workflow_miner_node
+from pipeline.nodes.dead_code_node import dead_code_node
+from pipeline.nodes.testgen_node import testgen_node
+from pipeline.nodes.baseline_runner_node import baseline_runner_node
+from pipeline.nodes.risk_gate_node import risk_gate_node
+from pipeline.nodes.migrator_node import migrator_node
 from pipeline.nodes.validator_node import validator_node
-from pipeline.nodes.reporter_node  import reporter_node
+from pipeline.nodes.reporter_node import reporter_node
 from storage.memory import RepoMemory
 
 
@@ -127,13 +133,22 @@ async def run_full_pipeline(session_id: str, target_module: Optional[str] = None
 
     async def _task():
         try:
-            final_state = await run_pipeline(
+            pipeline = get_pipeline()
+            initial_state = PipelineState(
+                session_id=session_id,
                 repo_path=session.repo_path,
                 target_module=target_module or session.target_module,
-                session_id=session_id
-            )
-            _sessions[session_id] = final_state
+                current_stage="starting",
+            ).model_dump()
+
+            # Stream the pipeline to get incremental updates
+            async for event in pipeline.astream(initial_state, stream_mode="updates"):
+                # event is a dict mapping node_name -> output_state
+                for node_name, output_state in event.items():
+                    print(f"[api] Node {node_name} finished")
+                    _sessions[session_id] = PipelineState(**output_state)
         except Exception as e:
+            print(f"[api] Pipeline Error: {e}")
             session.error = str(e)
             _sessions[session_id] = session
 
@@ -250,6 +265,14 @@ def get_tests(session_id: str):
     return state.test_suite.model_dump()
 
 
+@app.get("/dead-code/{session_id}", summary="Get dead code report")
+def get_dead_code(session_id: str):
+    state = _get_state(session_id)
+    if not state.dead_code_report:
+        raise HTTPException(404, "Dead code report not yet generated.")
+    return state.dead_code_report.model_dump()
+
+
 @app.get("/baseline/{session_id}", summary="Get baseline run results")
 def get_baseline(session_id: str):
     state = _get_state(session_id)
@@ -291,6 +314,33 @@ async def override_risk(session_id: str):
 
     asyncio.create_task(_resume())
     return {"status": "overridden", "session_id": session_id}
+
+
+@app.post("/apply/{session_id}", summary="Apply migration changes back to source")
+async def apply_migration(session_id: str):
+    """Overwrite the original repo files with the migrated ones."""
+    state = _get_state(session_id)
+    if not state.migrated_repo_path:
+        raise HTTPException(404, "No migration available to apply.")
+
+    # Safety check: avoid applying if we have critical drifts and no override?
+    # For hackathon: just do it!
+    src = Path(state.migrated_repo_path)
+    dst = Path(state.repo_path)
+
+    try:
+        # Copy migrated files back (excluding _bloc_tests which might have drifted/been temp)
+        # Actually, let's just copy everything non-hidden back
+        for item in src.rglob("*"):
+            if item.is_file() and "_bloc_tests" not in str(item):
+                rel = item.relative_to(src)
+                target = dst / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+        
+        return {"status": "applied", "repo_path": state.repo_path}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to apply migration: {e}")
 
 
 @app.get("/patch/{session_id}", summary="Get migration patch (unified diff)")

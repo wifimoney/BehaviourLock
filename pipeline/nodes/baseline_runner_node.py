@@ -12,6 +12,27 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+import openai
+import re
+
+CLIENT = openai.OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+)
+
+def _call_baseline_fix(filename: str, source: str) -> str:
+    """Uses LLM to do bare-minimum syntax fixes for Py3 baseline execution."""
+    prompt = f"Fix the SYNTAX of this Python 2 code so it runs in Python 3.\n\nFile: {filename}\n```python\n{source}\n```\n\nONLY fix print, except, xrange, and unicode. DO NOT change logic. Return full code in a markdown block."
+    
+    response = CLIENT.chat.completions.create(
+        model=os.environ.get("LLM_MODEL", "google/gemini-2.0-flash-001"),
+        messages=[{"role": "user", "content": prompt}]
+    )
+    text = response.choices[0].message.content
+    code_match = re.search(r"```python\n(.*?)```", text, re.DOTALL)
+    if code_match:
+        return code_match.group(1).strip()
+    return source
 
 from models.state import PipelineState, BaselineRun, TestResult
 
@@ -39,6 +60,7 @@ def baseline_runner_node(state: PipelineState) -> PipelineState:
             test_file.write_text(test.test_code, encoding="utf-8")
             written_files.append(test_file)
 
+        _quick_fix_py2_syntax(repo_path)
         results = _run_pytest(repo_path, test_dir)
 
         passed = sum(1 for r in results if r.passed)
@@ -83,7 +105,6 @@ def _run_pytest(repo_path: str, test_dir: Path) -> list[TestResult]:
         f"--json-report-file={report_path}",
         "--tb=short",
         "-q",
-        "--timeout=30",
     ]
 
     start = time.time()
@@ -96,16 +117,22 @@ def _run_pytest(repo_path: str, test_dir: Path) -> list[TestResult]:
     )
     elapsed = (time.time() - start) * 1000
 
+    results = []
     # Parse JSON report if available
     if report_path.exists():
         try:
-            report = json.loads(report_path.read_text())
-            return _parse_json_report(report)
-        except Exception:
-            pass
+            report_data = report_path.read_text()
+            if report_data.strip():
+                report = json.loads(report_data)
+                results = _parse_json_report(report)
+        except Exception as e:
+            print(f"[baseline_runner] ⚠ JSON report parse failed: {e}")
 
-    # Fallback: parse stdout
-    return _parse_stdout(proc.stdout + proc.stderr, elapsed)
+    if not results:
+        # Fallback: parse stdout
+        results = _parse_stdout(proc.stdout + proc.stderr, elapsed)
+    
+    return results
 
 
 def _parse_json_report(report: dict) -> list[TestResult]:
@@ -143,3 +170,18 @@ def _parse_stdout(output: str, elapsed_ms: float) -> list[TestResult]:
             duration_ms=elapsed_ms,
         ))
     return results
+def _quick_fix_py2_syntax(repo_path: str) -> None:
+    """Non-destructive (session-scoped) fix for common Py2 syntax to allow Py3 collection."""
+    from pipeline.nodes.migrator_node import _needs_migration
+    py_files = list(Path(repo_path).rglob("*.py"))
+    for py_file in py_files:
+        if "_bloc_tests" in str(py_file):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="replace")
+            if _needs_migration(content):
+                print(f"[baseline] 🔨 Fixing syntax for {py_file.name}...")
+                fixed = _call_baseline_fix(py_file.name, content)
+                py_file.write_text(fixed, encoding="utf-8")
+        except Exception as e:
+            print(f"[baseline] ⚠ Failed to fix {py_file.name}: {e}")

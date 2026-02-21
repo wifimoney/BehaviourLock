@@ -11,6 +11,8 @@ def parse_json_robust(text: str) -> dict:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+    
+    # print(f"[json_utils] Raw text for parsing: {text[:500]}...")
         
     # 2. Try to find markdown JSON block
     match = re.search(r"```json\n?(.*?)\n?```", text, re.DOTALL)
@@ -34,6 +36,9 @@ def parse_json_robust(text: str) -> dict:
             
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
+            print(f"[json_utils] JSON Parse Error: {e}")
+            print(f"[json_utils] Attempted to parse: {cleaned[:500]}...")
+            
             # Last ditch effort: try cleaning up even more if it looks like markdown was escaped
             try:
                 second_cleaned = cleaned.replace('\\"', '"').replace('\\n', '\n')

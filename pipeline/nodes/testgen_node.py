@@ -20,20 +20,23 @@ CLIENT = openai.OpenAI(
     api_key=os.environ.get("OPENROUTER_API_KEY", ""),
 )
 
-TESTGEN_SYSTEM = """You are an expert Python test engineer specialising in characterization tests (golden snapshot tests).
+TESTGEN_SYSTEM = """You are an expert Python test engineer specialising in characterization tests.
 
 Your job: given a Python function and its call graph context, generate a pytest test that:
 1. Calls the function with realistic inputs
-2. Captures the output as a snapshot (golden value)
-3. Asserts the output matches the snapshot exactly
+2. If the function returns a value, assert the result matches the expected "golden" result
+3. If the function prints, use the `capsys` fixture to capture and assert against the expected output
 4. Covers any side effects (file I/O, env reads, etc.) with mocks
 
 Rules:
-- Use pytest and unittest.mock only — no third-party test libraries
+- Use pytest and unittest.mock ONLY — NO third-party libraries (no pytest-mock, no mocker fixture, no pytest-snapshot)
+- Use `with unittest.mock.patch(...)` or the `@patch` decorator for mocking — DO NOT use the `mocker` fixture
 - Make fixtures deterministic (no random, no time.now())
 - If side effects are present, mock them and assert they were called
 - Output ONLY valid Python code — no markdown, no explanation
-- The test must be runnable standalone (include all imports)"""
+- The test must be runnable standalone (include all imports)
+- Hardcode the expected "golden" strings/values directly in the test assertions
+- DO NOT use a `snapshot` or `mocker` fixture"""
 
 TESTGEN_USER = """Generate a characterization test for this Python function.
 
@@ -88,7 +91,6 @@ def testgen_node(state: PipelineState) -> PipelineState:
                 continue
 
             call_context = _build_call_context(node, edge_map, wf_graph)
-
             result = _call_claude_testgen(
                 function_source=fn_source,
                 call_context=call_context,
@@ -150,7 +152,7 @@ def _call_claude_testgen(
     )
 
     response = CLIENT.chat.completions.create(
-        model="google/gemini-3.1-pro-preview",
+        model="google/gemini-2.0-flash-001",
         max_tokens=4096,
         messages=[
             {"role": "system", "content": TESTGEN_SYSTEM},
@@ -159,7 +161,10 @@ def _call_claude_testgen(
         response_format={"type": "json_object"}
     )
 
-    raw = response.choices[0].message.content.strip()
+    raw = response.choices[0].message.content
+    print(f"[testgen] FINISH REASON: {response.choices[0].finish_reason}")
+    print(f"[testgen] RAW LLM OUTPUT (len={len(raw)}):\n---START---\n{raw}\n---END---")
+    raw = raw.strip()
 
     from utils.json_utils import parse_json_robust
     try:

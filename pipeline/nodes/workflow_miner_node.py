@@ -142,9 +142,12 @@ def _build_call_graph(
     for py_file in py_files:
         mod_name = _file_to_module(py_file, repo_path)
 
-        # If a target module is specified, only analyse that file + deps
-        if target_module and target_module not in mod_name:
-            continue
+        # Normalize target_module to dot-notation if it's a path
+        if target_module:
+            normalized_target = target_module.replace(".py", "").replace("/", ".").replace("\\", ".")
+            # If target_module is a specific file, we only care about that or its submodules
+            if normalized_target not in mod_name and mod_name not in normalized_target:
+                continue
 
         source = py_file.read_text(encoding="utf-8", errors="replace")
         try:
@@ -192,8 +195,15 @@ def _build_call_graph(
 
     for qname, info in all_functions.items():
         for callee_name in info["calls"]:
+            # Clean up callee name (e.g., self.process_payment -> process_payment)
+            clean_name = callee_name
+            if callee_name.startswith("self."):
+                clean_name = callee_name[5:]
+            elif callee_name.startswith("cls."):
+                clean_name = callee_name[4:]
+
             # Try exact qname match first, then short name
-            callee_id = callee_name if callee_name in G else fn_names.get(callee_name)
+            callee_id = callee_name if callee_name in G else fn_names.get(clean_name)
             if callee_id and callee_id != qname:
                 G.add_edge(qname, callee_id)
                 call_edges.append(CallEdge(
@@ -248,6 +258,9 @@ def _regex_extract_functions(source: str, module_name: str) -> dict[str, dict]:
     # Simple regex for 'def func_name(args):'
     pattern = re.compile(r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", re.MULTILINE)
     
+    # Regex for 'self.method(' or 'func('
+    call_pattern = re.compile(r"([a-zA-Z_][a-zA-Z0-9_\.]*)\s*\(")
+    
     for i, line in enumerate(source.splitlines()):
         match = pattern.match(line)
         if match:
@@ -258,12 +271,21 @@ def _regex_extract_functions(source: str, module_name: str) -> dict[str, dict]:
                 "calls": [],
                 "side_effects": [],
             }
-            # Look for obvious side effects in the following lines (very basic)
+            # Look for obvious side effects and calls in the following lines
             body_start = i + 1
-            for j in range(body_start, min(body_start + 50, len(source.splitlines()))):
+            for j in range(body_start, len(source.splitlines())):
                 l = source.splitlines()[j]
                 if l.strip() and not l.startswith(" "):
-                    break # end of function indent
+                    if not l.strip().startswith("#"): # check if it's really end of indent
+                        break 
+                
+                # Extract calls
+                for c_match in call_pattern.finditer(l):
+                    c_name = c_match.group(1)
+                    if c_name not in {"def", "if", "for", "while", "print"}:
+                        funcs[qname]["calls"].append(c_name)
+
+                # Extract side effects
                 for effect_type, patterns in SIDE_EFFECT_PATTERNS.items():
                     if any(p in l for p in patterns):
                         funcs[qname]["side_effects"].append(effect_type)
