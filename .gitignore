@@ -27,3 +27,8 @@ bloc_upload_*
 __pycache__/
 *.pyc
 node_modules/
+.env
+.env.local
+__pycache__/
+*.pyc
+node_modules/
