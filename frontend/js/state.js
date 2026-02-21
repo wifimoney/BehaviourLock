@@ -9,6 +9,7 @@ const State = (() => {
       graph: null,
       tests: null,
       baseline: null,
+      risk: null,
       patch: null,
       validation: null,
       report: null,

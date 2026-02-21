@@ -61,5 +61,7 @@ const API = (() => {
     getValidation(sid) { return _fetch(`/validation/${sid}`); },
     getReport(sid)     { return _fetch(`/report/${sid}`); },
     getDeadCode(sid)   { return _fetch(`/dead-code/${sid}`); },
+    getRisk(sid)       { return _fetch(`/risk/${sid}`); },
+    overrideRisk(sid)  { return _fetch(`/override-risk/${sid}`, { method: 'POST' }); },
   };
 })();

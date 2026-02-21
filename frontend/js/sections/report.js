@@ -1,5 +1,6 @@
 /**
  * Report section — verdict hero card, risk meter, detail grid.
+ * Now includes pre-migration risk assessment card when available.
  */
 const ReportSection = (() => {
   State.on('result:report', render);
@@ -16,7 +17,13 @@ const ReportSection = (() => {
 
     const testCoverage = data.test_coverage_pct || 0;
 
+    // Pre-migration risk assessment card
+    const riskData = State.getResult('risk');
+    const riskCard = riskData ? _renderRiskCard(riskData) : '';
+
     el.innerHTML = `
+      ${riskCard}
+
       <!-- Verdict Hero -->
       <div class="result-card text-center mb-6 ${verdictBg}">
         <div class="inline-block px-6 py-2 rounded-full text-2xl font-bold mb-3 ${verdictClass}">
@@ -77,6 +84,58 @@ const ReportSection = (() => {
         </div>
       </div>
     `;
+  }
+
+  function _renderRiskCard(risk) {
+    const levelColors = {
+      low:     'border-safe/30 bg-safe/5',
+      medium:  'border-risky/30 bg-risky/5',
+      high:    'border-risky/50 bg-risky/10',
+      blocked: 'border-blocked/30 bg-blocked/5',
+    };
+    const levelBadge = {
+      low:     'badge-green',
+      medium:  'badge-yellow',
+      high:    'badge-yellow',
+      blocked: 'badge-red',
+    };
+
+    const level = risk.risk_level || 'medium';
+    const score = risk.risk_score != null ? (risk.risk_score * 100).toFixed(0) : '?';
+
+    let warningsHtml = '';
+    const warnings = risk.warnings || [];
+    if (warnings.length > 0) {
+      warningsHtml = warnings.map(w => {
+        const icon = w.severity === 'critical' ? '🔴' : '🟡';
+        const fn = _esc(w.function || 'unknown');
+        const msg = _esc(w.message || '');
+        return `<div class="text-sm text-gray-300">${icon} <strong>${fn}</strong> — ${msg}</div>`;
+      }).join('');
+    } else {
+      warningsHtml = '<p class="text-sm text-gray-500">No warnings — clean history.</p>';
+    }
+
+    return `
+      <div class="result-card mb-6 ${levelColors[level] || ''}">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm text-gray-500">Pre-Migration Risk Assessment</h3>
+          <span class="badge ${levelBadge[level] || 'badge-gray'}">${level.toUpperCase()} ${score}%</span>
+        </div>
+        <div class="grid md:grid-cols-3 gap-3 mb-3 text-sm">
+          <div><span class="text-gray-500">Known drifts:</span> <span class="text-white">${risk.known_drift_count ?? 0}</span></div>
+          <div><span class="text-gray-500">Past runs:</span> <span class="text-white">${risk.past_run_count ?? 0}</span></div>
+          <div><span class="text-gray-500">Worst verdict:</span> <span class="text-white">${risk.worst_historical_verdict || 'none'}</span></div>
+        </div>
+        <div class="space-y-1">${warningsHtml}</div>
+      </div>
+    `;
+  }
+
+  function _esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
   }
 
   return {};

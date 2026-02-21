@@ -153,21 +153,29 @@
             <div class="step-label">Baseline</div>
           </div>
           <div class="step-line"></div>
-          <div class="step" data-step="migration">
+          <div class="step" data-step="risk_check">
             <div class="step-circle">6</div>
+            <div class="step-label">Risk Check</div>
+          </div>
+          <div class="step-line"></div>
+          <div class="step" data-step="migration">
+            <div class="step-circle">7</div>
             <div class="step-label">Migration</div>
           </div>
           <div class="step-line"></div>
           <div class="step" data-step="validation">
-            <div class="step-circle">7</div>
+            <div class="step-circle">8</div>
             <div class="step-label">Validation</div>
           </div>
           <div class="step-line"></div>
           <div class="step" data-step="report">
-            <div class="step-circle">8</div>
+            <div class="step-circle">9</div>
             <div class="step-label">Report</div>
           </div>
         </div>
+
+        <!-- Risk Warning Banner (hidden by default) -->
+        <div id="risk-banner" class="hidden mt-6 rounded-xl border p-5"></div>
 
         <div id="pipeline-status" class="mt-8 text-center text-gray-500 text-sm">
           Ready to run. Click "Run Pipeline" to start.
